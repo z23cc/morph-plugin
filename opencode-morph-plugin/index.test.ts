@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { CompactClient } from "@morphllm/morphsdk";
 
 // These are internal to the plugin but duplicated here for testing.
 // Keep in sync with index.ts.
@@ -329,5 +330,426 @@ describe("truncation detection logic", () => {
     // lineLoss = (1-1)/1 = 0, which is below 0.5
     expect(result.lineLoss).toBe(0);
     expect(result.triggered).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Compaction helper functions — duplicated from index.ts for testing
+// ---------------------------------------------------------------------------
+
+type FakePart =
+  | { type: "text"; text: string }
+  | { type: "tool"; tool: string; state: any }
+  | { type: "reasoning"; text: string }
+  | { type: "step-start" }
+  | { type: "file"; filename: string };
+
+type FakeMessage = {
+  info: { id: string; role: "user" | "assistant"; sessionID: string };
+  parts: FakePart[];
+};
+
+function serializePart(part: FakePart): string {
+  switch (part.type) {
+    case "text":
+      return part.text;
+    case "tool": {
+      const state = part.state;
+      if (state.status === "completed") {
+        const inputStr = JSON.stringify(state.input).slice(0, 500);
+        const outputStr = (state.output || "").slice(0, 2000);
+        return `[Tool: ${part.tool}] ${inputStr}\nOutput: ${outputStr}`;
+      }
+      if (state.status === "error") {
+        return `[Tool: ${part.tool}] Error: ${state.error}`;
+      }
+      return `[Tool: ${part.tool}] ${state.status}`;
+    }
+    case "reasoning":
+      return `[Reasoning] ${part.text}`;
+    default:
+      return `[${part.type}]`;
+  }
+}
+
+function messagesToCompactInput(
+  messages: FakeMessage[],
+): { role: string; content: string }[] {
+  return messages
+    .map((m) => ({
+      role: m.info.role,
+      content: m.parts.map(serializePart).join("\n"),
+    }))
+    .filter((m) => m.content.length > 0);
+}
+
+function estimateTotalChars(messages: FakeMessage[]): number {
+  let total = 0;
+  for (const m of messages) {
+    for (const part of m.parts) {
+      if (part.type === "text") total += part.text.length;
+      else if (part.type === "tool") {
+        if (part.state.status === "completed") {
+          total += (part.state.output || "").length;
+          total += JSON.stringify(part.state.input).length;
+        }
+      }
+    }
+  }
+  return total;
+}
+
+function hashMessageIds(messages: { info: { id: string } }[]): string {
+  return messages.map((m) => m.info.id).join("|");
+}
+
+// Helpers to build fake messages for tests
+function makeTextMsg(
+  id: string,
+  role: "user" | "assistant",
+  text: string,
+): FakeMessage {
+  return {
+    info: { id, role, sessionID: "sess-1" },
+    parts: [{ type: "text", text }],
+  };
+}
+
+function makeToolMsg(
+  id: string,
+  toolName: string,
+  input: any,
+  output: string,
+): FakeMessage {
+  return {
+    info: { id, role: "assistant", sessionID: "sess-1" },
+    parts: [
+      {
+        type: "tool",
+        tool: toolName,
+        state: { status: "completed", input, output },
+      },
+    ],
+  };
+}
+
+describe("serializePart", () => {
+  test("serializes text part", () => {
+    expect(serializePart({ type: "text", text: "hello world" })).toBe(
+      "hello world",
+    );
+  });
+
+  test("serializes completed tool part", () => {
+    const result = serializePart({
+      type: "tool",
+      tool: "read",
+      state: {
+        status: "completed",
+        input: { path: "/foo.ts" },
+        output: "file contents here",
+      },
+    });
+    expect(result).toContain("[Tool: read]");
+    expect(result).toContain("/foo.ts");
+    expect(result).toContain("Output: file contents here");
+  });
+
+  test("serializes error tool part", () => {
+    const result = serializePart({
+      type: "tool",
+      tool: "write",
+      state: { status: "error", error: "permission denied" },
+    });
+    expect(result).toBe("[Tool: write] Error: permission denied");
+  });
+
+  test("serializes pending tool part", () => {
+    const result = serializePart({
+      type: "tool",
+      tool: "edit",
+      state: { status: "pending" },
+    });
+    expect(result).toBe("[Tool: edit] pending");
+  });
+
+  test("serializes reasoning part", () => {
+    expect(
+      serializePart({ type: "reasoning", text: "thinking about this..." }),
+    ).toBe("[Reasoning] thinking about this...");
+  });
+
+  test("serializes unknown part type as bracket marker", () => {
+    expect(serializePart({ type: "step-start" } as FakePart)).toBe(
+      "[step-start]",
+    );
+    expect(
+      serializePart({ type: "file", filename: "foo.ts" } as FakePart),
+    ).toBe("[file]");
+  });
+
+  test("truncates long tool input to 500 chars", () => {
+    const longInput = { data: "x".repeat(1000) };
+    const result = serializePart({
+      type: "tool",
+      tool: "search",
+      state: { status: "completed", input: longInput, output: "ok" },
+    });
+    const toolLine = result.split("\n")[0]!;
+    // The JSON.stringify(input).slice(0, 500) should truncate
+    const inputPart = toolLine.replace("[Tool: search] ", "");
+    expect(inputPart.length).toBeLessThanOrEqual(500);
+  });
+
+  test("truncates long tool output to 2000 chars", () => {
+    const longOutput = "y".repeat(5000);
+    const result = serializePart({
+      type: "tool",
+      tool: "read",
+      state: { status: "completed", input: {}, output: longOutput },
+    });
+    const outputLine = result.split("\n").slice(1).join("\n");
+    const outputPart = outputLine.replace("Output: ", "");
+    expect(outputPart.length).toBeLessThanOrEqual(2000);
+  });
+});
+
+describe("messagesToCompactInput", () => {
+  test("converts text messages to role/content pairs", () => {
+    const messages = [
+      makeTextMsg("1", "user", "hello"),
+      makeTextMsg("2", "assistant", "hi there"),
+    ];
+    const result = messagesToCompactInput(messages);
+    expect(result).toEqual([
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi there" },
+    ]);
+  });
+
+  test("filters out messages with empty content", () => {
+    const messages: FakeMessage[] = [
+      makeTextMsg("1", "user", "hello"),
+      { info: { id: "2", role: "assistant", sessionID: "s" }, parts: [] },
+    ];
+    const result = messagesToCompactInput(messages);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.content).toBe("hello");
+  });
+
+  test("joins multiple parts with newlines", () => {
+    const msg: FakeMessage = {
+      info: { id: "1", role: "assistant", sessionID: "s" },
+      parts: [
+        { type: "text", text: "Let me check" },
+        {
+          type: "tool",
+          tool: "read",
+          state: {
+            status: "completed",
+            input: { path: "/a.ts" },
+            output: "contents",
+          },
+        },
+        { type: "text", text: "Done" },
+      ],
+    };
+    const result = messagesToCompactInput([msg]);
+    expect(result[0]!.content).toContain("Let me check");
+    expect(result[0]!.content).toContain("[Tool: read]");
+    expect(result[0]!.content).toContain("Done");
+  });
+});
+
+describe("estimateTotalChars", () => {
+  test("counts text part characters", () => {
+    const messages = [
+      makeTextMsg("1", "user", "hello"), // 5 chars
+      makeTextMsg("2", "assistant", "world!"), // 6 chars
+    ];
+    expect(estimateTotalChars(messages)).toBe(11);
+  });
+
+  test("counts completed tool input + output", () => {
+    const messages = [makeToolMsg("1", "read", { path: "/a" }, "contents")];
+    // JSON.stringify({path:"/a"}) = '{"path":"/a"}' = 13 chars
+    // "contents" = 8 chars
+    expect(estimateTotalChars(messages)).toBe(13 + 8);
+  });
+
+  test("ignores non-completed tool parts", () => {
+    const msg: FakeMessage = {
+      info: { id: "1", role: "assistant", sessionID: "s" },
+      parts: [
+        { type: "tool", tool: "edit", state: { status: "pending" } },
+        {
+          type: "tool",
+          tool: "write",
+          state: { status: "error", error: "fail" },
+        },
+      ],
+    };
+    expect(estimateTotalChars([msg])).toBe(0);
+  });
+
+  test("ignores non-text non-tool parts", () => {
+    const msg: FakeMessage = {
+      info: { id: "1", role: "assistant", sessionID: "s" },
+      parts: [
+        { type: "reasoning", text: "this is long reasoning" },
+        { type: "step-start" } as FakePart,
+      ],
+    };
+    expect(estimateTotalChars([msg])).toBe(0);
+  });
+
+  test("returns 0 for empty messages", () => {
+    expect(estimateTotalChars([])).toBe(0);
+  });
+});
+
+describe("hashMessageIds", () => {
+  test("joins message IDs with pipe", () => {
+    const messages = [
+      { info: { id: "abc" } },
+      { info: { id: "def" } },
+      { info: { id: "ghi" } },
+    ];
+    expect(hashMessageIds(messages)).toBe("abc|def|ghi");
+  });
+
+  test("returns empty string for empty array", () => {
+    expect(hashMessageIds([])).toBe("");
+  });
+
+  test("handles single message", () => {
+    expect(hashMessageIds([{ info: { id: "only" } }])).toBe("only");
+  });
+});
+
+describe("compaction integration", () => {
+  const MORPH_API_KEY = process.env.MORPH_API_KEY;
+
+  test("CompactClient.compact() returns valid result", async () => {
+    if (!MORPH_API_KEY) {
+      console.log("Skipping: MORPH_API_KEY not set");
+      return;
+    }
+
+    const client = new CompactClient({
+      morphApiKey: MORPH_API_KEY,
+      morphApiUrl: "https://api.morphllm.com",
+      timeout: 30000,
+    });
+
+    const messages = [
+      {
+        role: "user",
+        content:
+          "I want to refactor the authentication module. Currently it uses JWT tokens stored in localStorage, but I want to switch to httpOnly cookies for better security. The auth flow starts in src/auth/login.ts where we call the /api/auth/login endpoint, get back a token, and store it. Then in src/middleware/auth.ts we read the token from the Authorization header.",
+      },
+      {
+        role: "assistant",
+        content:
+          "I'll help you refactor the authentication from JWT localStorage to httpOnly cookies. Let me first examine the current implementation.\n\n[Tool: read] {\"path\":\"src/auth/login.ts\"}\nOutput: import { api } from '../api';\n\nexport async function login(email: string, password: string) {\n  const response = await api.post('/api/auth/login', { email, password });\n  const { token } = response.data;\n  localStorage.setItem('auth_token', token);\n  return response.data.user;\n}\n\n[Tool: read] {\"path\":\"src/middleware/auth.ts\"}\nOutput: import { NextFunction, Request, Response } from 'express';\n\nexport function authMiddleware(req: Request, res: Response, next: NextFunction) {\n  const token = req.headers.authorization?.replace('Bearer ', '');\n  if (!token) return res.status(401).json({ error: 'Unauthorized' });\n  // verify token...\n  next();\n}\n\nI can see the current flow. Here's my plan:\n1. Modify the login endpoint to set httpOnly cookies instead of returning tokens\n2. Update the middleware to read from cookies instead of Authorization header\n3. Add CSRF protection since we're switching to cookies",
+      },
+      {
+        role: "user",
+        content: "Sounds good, go ahead with the changes.",
+      },
+      {
+        role: "assistant",
+        content:
+          "Let me apply the changes.\n\n[Tool: edit] {\"path\":\"src/auth/login.ts\"}\nOutput: Applied edit successfully.\n\n[Tool: edit] {\"path\":\"src/middleware/auth.ts\"}\nOutput: Applied edit successfully.\n\nI've updated both files. The login function now expects the server to set an httpOnly cookie, and the middleware reads from req.cookies instead of the Authorization header.",
+      },
+    ];
+
+    const result = await client.compact({
+      messages,
+      compressionRatio: 0.5,
+      preserveRecent: 1,
+    });
+
+    expect(result).toBeDefined();
+    expect(result.output).toBeDefined();
+    expect(result.output.length).toBeGreaterThan(0);
+    expect(result.output.length).toBeLessThan(
+      messages.map((m) => m.content).join("").length,
+    );
+    expect(result.usage).toBeDefined();
+    expect(result.usage.compression_ratio).toBeGreaterThan(0);
+    expect(result.usage.compression_ratio).toBeLessThanOrEqual(1);
+    expect(result.usage.input_tokens).toBeGreaterThan(0);
+    expect(result.usage.output_tokens).toBeGreaterThan(0);
+    expect(result.messages).toBeDefined();
+    expect(result.messages.length).toBeGreaterThan(0);
+  }, 30000);
+
+  test("proactive compaction threshold logic", () => {
+    // Simulate the decision flow from experimental.chat.messages.transform
+    const THRESHOLD = 80000;
+    const PRESERVE_RECENT = 6;
+
+    // Below threshold — no compaction
+    const smallMessages = Array.from({ length: 20 }, (_, i) =>
+      makeTextMsg(`msg-${i}`, i % 2 === 0 ? "user" : "assistant", "short"),
+    );
+    expect(estimateTotalChars(smallMessages)).toBeLessThan(THRESHOLD);
+
+    // Above threshold — compaction should trigger
+    const largeMessages = Array.from({ length: 20 }, (_, i) =>
+      makeTextMsg(
+        `msg-${i}`,
+        i % 2 === 0 ? "user" : "assistant",
+        "x".repeat(5000),
+      ),
+    );
+    expect(estimateTotalChars(largeMessages)).toBeGreaterThan(THRESHOLD);
+
+    // Split preserves recent messages
+    const older = largeMessages.slice(0, -PRESERVE_RECENT);
+    const recent = largeMessages.slice(-PRESERVE_RECENT);
+    expect(older.length).toBe(14);
+    expect(recent.length).toBe(PRESERVE_RECENT);
+
+    // Input conversion produces non-empty content
+    const compactInput = messagesToCompactInput(older);
+    expect(compactInput.length).toBe(14);
+    expect(compactInput.every((m) => m.content.length > 0)).toBe(true);
+
+    // Hash is stable
+    const hash1 = hashMessageIds(older);
+    const hash2 = hashMessageIds(older);
+    expect(hash1).toBe(hash2);
+
+    // Hash changes when messages change
+    const differentOlder = [
+      ...older.slice(0, -1),
+      makeTextMsg("new-id", "user", "different"),
+    ];
+    expect(hashMessageIds(differentOlder)).not.toBe(hash1);
+  });
+
+  test("too few messages does not trigger compaction", () => {
+    const PRESERVE_RECENT = 6;
+    // Need at least PRESERVE_RECENT + 2 messages
+    const messages = Array.from({ length: 7 }, (_, i) =>
+      makeTextMsg(
+        `msg-${i}`,
+        i % 2 === 0 ? "user" : "assistant",
+        "x".repeat(20000),
+      ),
+    );
+    // Even though chars are high, message count is below threshold
+    expect(messages.length).toBeLessThan(PRESERVE_RECENT + 2);
+  });
+});
+
+describe("feature flags", () => {
+  test("README documents feature flag env vars", () => {
+    const content = readFileSync(join(import.meta.dir, "README.md"), "utf-8");
+    expect(content).toContain("MORPH_EDIT");
+    expect(content).toContain("MORPH_WARPGREP");
+    expect(content).toContain("MORPH_COMPACT");
   });
 });

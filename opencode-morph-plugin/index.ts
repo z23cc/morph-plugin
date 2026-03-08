@@ -52,6 +52,14 @@ const COMPACT_RATIO = parseFloat(
 );
 
 /**
+ * Feature flags — users can disable specific capabilities.
+ * All default to true (enabled). Set to "false" to disable.
+ */
+const MORPH_EDIT_ENABLED = process.env.MORPH_EDIT !== "false";
+const MORPH_WARPGREP_ENABLED = process.env.MORPH_WARPGREP !== "false";
+const MORPH_COMPACT_ENABLED = process.env.MORPH_COMPACT !== "false";
+
+/**
  * Agents that are blocked from using morph_edit by default.
  * Users can override by setting MORPH_ALLOW_READONLY_AGENTS=true
  */
@@ -260,12 +268,19 @@ const MorphPlugin: Plugin = async ({ directory, client }) => {
       "MORPH_API_KEY not set - morph tools will be disabled",
     );
   } else {
-    await log("info", `Plugin v${PLUGIN_VERSION} loaded`);
+    const features = [
+      MORPH_EDIT_ENABLED && "edit",
+      MORPH_WARPGREP_ENABLED && "warpgrep",
+      MORPH_COMPACT_ENABLED && "compact",
+    ].filter(Boolean);
+    await log("info", `Plugin v${PLUGIN_VERSION} loaded [${features.join(", ")}]`);
   }
 
-  return {
-    tool: {
-      morph_edit: tool({
+  // Build tool map conditionally based on feature flags
+  const tools: Record<string, ReturnType<typeof tool>> = {};
+
+  if (MORPH_EDIT_ENABLED) {
+    tools.morph_edit = tool({
         description: `Edit existing files using partial code snippets with "// ... existing code ..." markers. Morph's AI merges your changes into the full file.
 
 WHEN TO USE morph_edit vs edit:
@@ -489,9 +504,11 @@ Options:
 ${udiff.slice(0, 3000)}${udiff.length > 3000 ? "\n... (truncated)" : ""}
 \`\`\``;
         },
-      }),
+    });
+  }
 
-      warpgrep_codebase_search: tool({
+  if (MORPH_WARPGREP_ENABLED) {
+    tools.warpgrep_codebase_search = tool({
         description: `Search the codebase using natural language. Multi-turn agentic search that uses ripgrep, file reading, and directory listing to find relevant code contexts.
 
 Use this for semantic/exploratory searches like "Find the authentication flow", "How does error handling work", "Where is the database connection configured". Returns relevant file sections with line numbers.
@@ -560,11 +577,16 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`;
 Try rephrasing your search term or using grep for exact keyword searches.`;
           }
         },
-      }),
-    },
+    });
+  }
 
-    // Customize tool output display in TUI
-    "tool.execute.after": async (input, output) => {
+  // Build hooks object, conditionally including compaction hooks
+  const hooks: Record<string, any> = {
+    tool: tools,
+  };
+
+  // Customize tool output display in TUI
+  hooks["tool.execute.after"] = async (input: any, output: any) => {
       if (input.tool === "morph_edit") {
         const fileMatch = output.output.match(/Applied edit to (.+?)\n/);
         const statsMatch = output.output.match(/\+(\d+) -(\d+) lines/);
@@ -629,12 +651,13 @@ Try rephrasing your search term or using grep for exact keyword searches.`;
           version: PLUGIN_VERSION,
         };
       }
-    },
+  };
 
+  if (MORPH_COMPACT_ENABLED) {
     // Proactive compaction: compress older messages via Morph before the LLM
     // sees them. This preempts OpenCode's built-in auto-compact (95% context).
     // Messages stay in the DB untouched; the LLM just sees a compressed view.
-    "experimental.chat.messages.transform": async (_input, output) => {
+    hooks["experimental.chat.messages.transform"] = async (_input: any, output: any) => {
       if (!MORPH_API_KEY) return;
 
       const messages = output.messages;
@@ -695,18 +718,20 @@ Try rephrasing your search term or using grep for exact keyword searches.`;
           `Compact failed: ${(err as Error).message}. Falling back to native compaction.`,
         );
       }
-    },
+    };
 
     // When OpenCode's native compaction triggers, log it
-    "experimental.session.compacting": async (_input, output) => {
+    hooks["experimental.session.compacting"] = async (_input: any, output: any) => {
       await log("debug", "OpenCode native compaction triggered");
       // We could add extra context here but the proactive compaction
       // via messages.transform should prevent this from firing often
       output.context.push(
         "Note: Morph compact plugin is active. Older messages may already be compressed.",
       );
-    },
-  };
+    };
+  }
+
+  return hooks;
 };
 
 /**
