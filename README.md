@@ -89,7 +89,7 @@ Use for exploratory queries. For exact keyword lookup, use `grep` directly.
 
 ### State-of-the-Art Compaction
 
-25,000+ tok/s context compression. +0.6% on SWE-Bench Pro, where summarization-based compaction methods all hurt performance. Fires at 140k chars (~35k tokens), before OpenCode's built-in auto-compact (95% context window). Results cached per message set.
+25,000+ tok/s context compression in under 2 seconds. +0.6% on SWE-Bench Pro, where summarization-based compaction methods all hurt performance. Fires at 140k chars (~35k tokens), before OpenCode's built-in auto-compact (95% context window). Results cached per message set.
 
 ```
   Every LLM call                      Only fires when context is large
