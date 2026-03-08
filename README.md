@@ -2,6 +2,10 @@
 
 Three tools that make [OpenCode](https://opencode.ai) agents faster, cheaper, and more accurate.
 
+- **Fast Apply** — 10,500+ tok/s code editing with lazy markers
+- **WarpGrep** — fast agentic codebase search, +4% on SWE-Bench Pro, -15% cost
+- **Compaction** — 25,000+ tok/s context compression in sub-2s, +0.6% on SWE-Bench Pro
+
 ![WarpGrep SWE-bench Pro Benchmarks](assets/warpgrep-benchmarks.png)
 
 On production repos and SWE-Bench Pro, enabling WarpGrep and compaction improves task accuracy by **6%**, reduces cost, and is net **28% faster**.
