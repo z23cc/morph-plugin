@@ -1,6 +1,8 @@
 # opencode-morph-plugin
 
-OpenCode plugin for [Morph SDK](https://morphllm.com) — fast apply, WarpGrep codebase search, and shell env integration.
+OpenCode plugin for [Morph SDK](https://morphllm.com) — fast apply, WarpGrep codebase search, and proactive compaction.
+
+> **Production results:** On production repos and SWE-Bench Pro, enabling WarpGrep and compaction improves task performance by **6%** while using fewer frontier model tokens, costing less, and being net faster by around **28%**.
 
 ## Features
 
