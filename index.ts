@@ -18,6 +18,10 @@ const MORPH_API_URL = "https://api.morphllm.com";
 const MORPH_TIMEOUT = 30000;
 const MORPH_WARP_GREP_TIMEOUT = 60000;
 const MORPH_COMPACT_TIMEOUT = 60000;
+const GITHUB_RESOLVER_TIMEOUT = 10000;
+const GITHUB_REPO_API_URL = "https://api.github.com/repos";
+const GITHUB_REPO_SEARCH_URL = "https://api.github.com/search/repositories";
+const GITHUB_REPO_SUGGESTION_LIMIT = 5;
 
 // Compaction config — threshold and ratio are user-tunable
 const COMPACT_CHAR_THRESHOLD = parseInt(
@@ -38,6 +42,8 @@ const COMPACT_RATIO = parseFloat(
  */
 const MORPH_EDIT_ENABLED = process.env.MORPH_EDIT !== "false";
 const MORPH_WARPGREP_ENABLED = process.env.MORPH_WARPGREP !== "false";
+const MORPH_PUBLIC_REPO_CONTEXT_ENABLED =
+  process.env.MORPH_PUBLIC_REPO_CONTEXT_SEARCH !== "false";
 const MORPH_COMPACT_ENABLED = process.env.MORPH_COMPACT !== "false";
 
 /**
@@ -224,6 +230,421 @@ function formatWarpGrepResult(result: WarpGrepResult): string {
   return parts.join("\n");
 }
 
+type PublicRepoContextSearchArgs = {
+  search_term: string;
+  owner_repo?: string;
+  github_url?: string;
+  branch?: string;
+};
+
+type ResolvedPublicRepoLocator = {
+  github: string;
+  display: string;
+};
+
+type GitHubRepoSuggestion = {
+  fullName: string;
+  htmlUrl: string;
+  description?: string;
+  stars: number;
+  ownerLogin: string;
+  name: string;
+};
+
+type GitHubRepoLookupResult =
+  | {
+      status: "found";
+      fullName: string;
+      defaultBranch?: string;
+      htmlUrl?: string;
+    }
+  | {
+      status: "not_found";
+      detail: string;
+    }
+  | {
+      status: "unavailable";
+      detail: string;
+    };
+
+const GITHUB_OWNER_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const GENERIC_REPO_TOKENS = new Set([
+  "app",
+  "client",
+  "code",
+  "core",
+  "docs",
+  "js",
+  "kit",
+  "lib",
+  "node",
+  "package",
+  "packages",
+  "protocol",
+  "repo",
+  "repository",
+  "sdk",
+  "server",
+  "solana",
+  "ts",
+  "typescript",
+  "web",
+]);
+const GENERIC_SEARCH_TERMS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "auth",
+  "create",
+  "does",
+  "end",
+  "explain",
+  "features",
+  "find",
+  "flow",
+  "for",
+  "from",
+  "how",
+  "in",
+  "is",
+  "main",
+  "offer",
+  "offers",
+  "of",
+  "on",
+  "order",
+  "packages",
+  "placement",
+  "repo",
+  "repository",
+  "the",
+  "this",
+  "to",
+  "what",
+  "work",
+  "works",
+]);
+
+function tokenizeResolverText(text: string): string[] {
+  return Array.from(
+    new Set(
+      text
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((token) => token.length >= 2),
+    ),
+  );
+}
+
+function splitRepoLocator(locator: string): { owner?: string; repo?: string } {
+  const parts = locator.split("/");
+  if (parts.length !== 2) return {};
+  return { owner: parts[0]!.toLowerCase(), repo: parts[1]!.toLowerCase() };
+}
+
+function buildPublicRepoResolverQueries(
+  repo: ResolvedPublicRepoLocator,
+  searchTerm: string,
+): string[] {
+  const { owner, repo: repoName } = splitRepoLocator(repo.github);
+  const meaningfulSearchTokens = tokenizeResolverText(searchTerm)
+    .filter((token) => !GENERIC_SEARCH_TERMS.has(token))
+    .slice(0, 4);
+  const repoTokens = tokenizeResolverText(repo.github).filter(
+    (token) => !GENERIC_REPO_TOKENS.has(token),
+  );
+
+  const queries = new Set<string>();
+
+  if (owner) {
+    queries.add(`user:${owner}`);
+    if (meaningfulSearchTokens.length > 0) {
+      queries.add(`user:${owner} ${meaningfulSearchTokens.join(" ")}`);
+    }
+  }
+
+  const broadTokens = [...repoTokens, ...meaningfulSearchTokens].slice(0, 6);
+  if (broadTokens.length > 0) {
+    queries.add(broadTokens.join(" "));
+  }
+
+  if (repoName && !GENERIC_REPO_TOKENS.has(repoName)) {
+    queries.add(repoName);
+  }
+
+  return Array.from(queries);
+}
+
+function computeGitHubSuggestionScore(
+  suggestion: GitHubRepoSuggestion,
+  repo: ResolvedPublicRepoLocator,
+  searchTerm: string,
+): number {
+  const { owner, repo: repoName } = splitRepoLocator(repo.github);
+  const fullName = suggestion.fullName.toLowerCase();
+  const name = suggestion.name.toLowerCase();
+  const description = (suggestion.description || "").toLowerCase();
+  const haystack = `${fullName} ${description}`;
+  const searchTokens = tokenizeResolverText(searchTerm).filter(
+    (token) => !GENERIC_SEARCH_TERMS.has(token),
+  );
+
+  let score = Math.log10(suggestion.stars + 1);
+
+  if (owner && suggestion.ownerLogin.toLowerCase() === owner) score += 8;
+  if (repoName && name === repoName) score += 6;
+  if (repoName && !GENERIC_REPO_TOKENS.has(repoName) && name.includes(repoName)) {
+    score += 3;
+  }
+  if (fullName === repo.github.toLowerCase()) score += 20;
+
+  for (const token of searchTokens.slice(0, 4)) {
+    if (haystack.includes(token)) score += 1.5;
+  }
+
+  return score;
+}
+
+function classifyPublicRepoSearchError(error: string): "not_found" | "other" {
+  const normalized = error.toLowerCase();
+  if (
+    normalized.includes("not found") ||
+    normalized.includes("404") ||
+    normalized.includes("does not exist") ||
+    normalized.includes("could not resolve") ||
+    normalized.includes("failed to resolve") ||
+    normalized.includes("repository resolution")
+  ) {
+    return "not_found";
+  }
+  return "other";
+}
+
+function formatPublicRepoResolutionFailure(
+  repo: ResolvedPublicRepoLocator,
+  detail?: string,
+  suggestions: GitHubRepoSuggestion[] = [],
+): string {
+  const parts: string[] = [
+    `Repository resolution failed for ${repo.display}.\n\nThis locator did not resolve to a public GitHub repository that Morph can search.`,
+  ];
+  if (detail) parts.push(`Resolver detail: ${detail}`);
+  if (suggestions.length > 0) {
+    const list = suggestions.map((s) => `- ${s.fullName}${s.description ? ` - ${s.description}` : ""}`).join("\n");
+    parts.push(`Did you mean:\n${list}\n\nSuggested next step:\nRetry public_repo_context_search with owner_repo="${suggestions[0]!.fullName}".`);
+  }
+  parts.push(`Try:\n- owner_repo: "owner/repo"\n- github_url: "https://github.com/owner/repo"\n- verify the owner and repo spelling\n- use the canonical upstream repository instead of a package name or import path\n\nExamples:\n- anza-xyz/kit\n- facebook/react\n- vercel/next.js`);
+  return parts.join("\n\n");
+}
+
+function resolvePublicRepoLocator(
+  args: PublicRepoContextSearchArgs,
+): { repo: ResolvedPublicRepoLocator } | { error: string } {
+  const ownerRepo = args.owner_repo?.trim();
+  const githubUrl = args.github_url?.trim();
+
+  if (ownerRepo && githubUrl) {
+    return {
+      error: `Error: Provide either owner_repo or github_url, not both.
+
+Use owner_repo for values like "facebook/react" or github_url for full URLs like "https://github.com/facebook/react".`,
+    };
+  }
+
+  if (!ownerRepo && !githubUrl) {
+    return {
+      error: `Error: Missing repository target.
+
+Provide exactly one of:
+- owner_repo: "facebook/react"
+- github_url: "https://github.com/facebook/react"`,
+    };
+  }
+
+  if (ownerRepo) {
+    if (!GITHUB_OWNER_REPO_PATTERN.test(ownerRepo)) {
+      return {
+        error: `Error: owner_repo must be a GitHub repository in "owner/repo" format.
+
+Received: "${ownerRepo}"
+
+Examples:
+- "facebook/react"
+- "vercel/next.js"
+- "anza-xyz/kit"
+
+If you have a full URL, use github_url instead.`,
+      };
+    }
+
+    return {
+      repo: {
+        github: ownerRepo,
+        display: ownerRepo,
+      },
+    };
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(githubUrl!);
+  } catch {
+    return {
+      error: `Error: github_url must be a valid GitHub repository URL.
+
+Received: "${githubUrl}"
+
+Example:
+- "https://github.com/facebook/react"`,
+    };
+  }
+
+  if (!["github.com", "www.github.com"].includes(parsed.hostname)) {
+    return {
+      error: `Error: github_url must point to github.com.
+
+Received host: "${parsed.hostname}"
+
+Example:
+- "https://github.com/facebook/react"`,
+    };
+  }
+
+  const pathParts = parsed.pathname
+    .split("/")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (pathParts.length < 2) {
+    return {
+      error: `Error: github_url must include both owner and repository name.
+
+Received: "${githubUrl}"
+
+Example:
+- "https://github.com/facebook/react"`,
+    };
+  }
+
+  const owner = pathParts[0]!;
+  const repoName = pathParts[1]!.replace(/\.git$/, "");
+  const canonicalRepo = `${owner}/${repoName}`;
+
+  if (!GITHUB_OWNER_REPO_PATTERN.test(canonicalRepo)) {
+    return {
+      error: `Error: github_url did not resolve to a valid GitHub owner/repo locator.
+
+Received: "${githubUrl}"`,
+    };
+  }
+
+  return {
+    repo: {
+      github: canonicalRepo,
+      display: canonicalRepo,
+    },
+  };
+}
+
+function githubHeaders(): Record<string, string> {
+  return {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "@morphllm/opencode-morph-plugin",
+  };
+}
+
+async function withGitHubTimeout<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), GITHUB_RESOLVER_TIMEOUT);
+  try {
+    return await fn(ctrl.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchGitHubRepoSuggestions(
+  repo: ResolvedPublicRepoLocator,
+  searchTerm: string,
+): Promise<GitHubRepoSuggestion[]> {
+  return withGitHubTimeout(async (signal) => {
+    const headers = githubHeaders();
+    const candidates = new Map<string, GitHubRepoSuggestion>();
+    const queries = buildPublicRepoResolverQueries(repo, searchTerm).slice(0, 3);
+
+    for (const query of queries) {
+      const url = new URL(GITHUB_REPO_SEARCH_URL);
+      url.searchParams.set("q", query);
+      url.searchParams.set("per_page", "10");
+      url.searchParams.set("sort", "stars");
+      url.searchParams.set("order", "desc");
+
+      const response = await fetch(url.toString(), { headers, signal });
+      if (!response.ok) continue;
+
+      const body = (await response.json()) as {
+        items?: Array<{
+          full_name?: string;
+          html_url?: string;
+          description?: string | null;
+          stargazers_count?: number;
+          name?: string;
+          owner?: { login?: string };
+        }>;
+      };
+
+      for (const item of body.items || []) {
+        if (!item.full_name || !item.html_url || !item.name || !item.owner?.login) continue;
+        candidates.set(item.full_name, {
+          fullName: item.full_name,
+          htmlUrl: item.html_url,
+          description: item.description || undefined,
+          stars: item.stargazers_count || 0,
+          ownerLogin: item.owner.login,
+          name: item.name,
+        });
+      }
+    }
+
+    return Array.from(candidates.values())
+      .sort((a, b) => computeGitHubSuggestionScore(b, repo, searchTerm) - computeGitHubSuggestionScore(a, repo, searchTerm))
+      .slice(0, GITHUB_REPO_SUGGESTION_LIMIT);
+  });
+}
+
+async function lookupGitHubRepository(
+  repo: ResolvedPublicRepoLocator,
+): Promise<GitHubRepoLookupResult> {
+  return withGitHubTimeout(async (signal) => {
+    try {
+      const response = await fetch(`${GITHUB_REPO_API_URL}/${repo.github}`, {
+        headers: githubHeaders(),
+        signal,
+      });
+
+      if (response.status === 404) return { status: "not_found", detail: "GitHub repository not found" };
+      if (!response.ok) return { status: "unavailable", detail: `GitHub repo lookup failed with status ${response.status}` };
+
+      const body = (await response.json()) as {
+        full_name?: string;
+        default_branch?: string;
+        html_url?: string;
+      };
+
+      return {
+        status: "found",
+        fullName: body.full_name || repo.github,
+        defaultBranch: body.default_branch,
+        htmlUrl: body.html_url,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown GitHub repo lookup error";
+      return { status: "unavailable", detail: message };
+    }
+  });
+}
+
 const MorphPlugin: Plugin = async ({ directory, client }) => {
   const log = async (
     level: "debug" | "info" | "warn" | "error",
@@ -251,6 +672,7 @@ const MorphPlugin: Plugin = async ({ directory, client }) => {
     const features = [
       MORPH_EDIT_ENABLED && "edit",
       MORPH_WARPGREP_ENABLED && "warpgrep",
+      MORPH_PUBLIC_REPO_CONTEXT_ENABLED && "public-repo-context",
       MORPH_COMPACT_ENABLED && "compact",
     ].filter(Boolean);
     await log("info", `Plugin v${PLUGIN_VERSION} loaded [${features.join(", ")}]`);
@@ -560,6 +982,140 @@ Try rephrasing your search term or using grep for exact keyword searches.`;
     });
   }
 
+  if (MORPH_PUBLIC_REPO_CONTEXT_ENABLED) {
+    tools.public_repo_context_search = tool({
+        description: `Grounded code context search for public GitHub repositories. Uses Morph's hosted WarpGrep to search indexed public repos without cloning them locally.
+
+Use this when you need to understand an external codebase, for example:
+- "How do React hooks work in this repo?"
+- "Find how Next.js handles server actions"
+- "Where does Express parse JSON bodies?"
+
+This tool is for public remote repos. For the current checked-out workspace, use warpgrep_codebase_search instead.
+
+Provide exactly one repository locator:
+- owner_repo: "facebook/react"
+- github_url: "https://github.com/facebook/react"`,
+
+        args: {
+          search_term: tool.schema
+            .string()
+            .describe(
+              "Natural language query describing what to find or understand in the public repository",
+            ),
+          owner_repo: tool.schema
+            .string()
+            .optional()
+            .describe(
+              'GitHub repository in "owner/repo" format, for example "facebook/react"',
+            ),
+          github_url: tool.schema
+            .string()
+            .optional()
+            .describe(
+              'Full GitHub repository URL, for example "https://github.com/facebook/react"',
+            ),
+          branch: tool.schema
+            .string()
+            .optional()
+            .describe(
+              "Optional branch name to search instead of the repository default branch",
+            ),
+        },
+
+        async execute(args) {
+          if (!MORPH_API_KEY) {
+            return `Error: MORPH_API_KEY not configured.
+
+To use public_repo_context_search, set the MORPH_API_KEY environment variable.
+Get your API key at: https://morphllm.com/dashboard/api-keys`;
+          }
+
+          const locator = resolvePublicRepoLocator(args);
+          if ("error" in locator) {
+            return locator.error;
+          }
+          const repo = locator.repo;
+
+          const startTime = Date.now();
+          const repoLookup = await lookupGitHubRepository(repo);
+
+          if (repoLookup.status === "not_found") {
+            const suggestions = await fetchGitHubRepoSuggestions(
+              repo,
+              args.search_term,
+            ).catch(() => []);
+            return formatPublicRepoResolutionFailure(
+              repo,
+              repoLookup.detail,
+              suggestions,
+            );
+          }
+
+          if (repoLookup.status === "unavailable") {
+            await log(
+              "warn",
+              `GitHub repo lookup unavailable for ${repo.github}: ${repoLookup.detail}`,
+            );
+          }
+
+          try {
+            const result = await warpGrep.searchGitHub({
+              searchTerm: args.search_term,
+              github: repo.github,
+              branch: args.branch,
+            });
+
+            const duration = Date.now() - startTime;
+            const contextCount = result.contexts?.length ?? 0;
+
+            await log(
+              "info",
+              `Public repo context: ${repo.github} → ${contextCount} contexts (${duration}ms)`,
+            );
+
+            if (!result.success) {
+              if (classifyPublicRepoSearchError(result.error || "") === "not_found") {
+                const suggestions = await fetchGitHubRepoSuggestions(
+                  repo,
+                  args.search_term,
+                ).catch(() => []);
+                return formatPublicRepoResolutionFailure(
+                  repo,
+                  result.error,
+                  suggestions,
+                );
+              }
+              return `Public repo context search failed for ${repo.github}: ${result.error}`;
+            }
+
+            return `Repository: ${repo.github}\n\n${formatWarpGrepResult(result)}`;
+          } catch (err) {
+            const error = err as Error;
+            const duration = Date.now() - startTime;
+            await log(
+              "error",
+              `Public repo context search failed for ${repo.github} after ${duration}ms: ${error.message}`,
+            );
+            if (classifyPublicRepoSearchError(error.message) === "not_found") {
+              const suggestions = await fetchGitHubRepoSuggestions(
+                repo,
+                args.search_term,
+              ).catch(() => []);
+              return formatPublicRepoResolutionFailure(
+                repo,
+                error.message,
+                suggestions,
+              );
+            }
+            return `Public repo context search failed for ${repo.github}: ${error.message}
+
+Try a different repository locator, a different branch, or a more specific search term.`;
+          }
+        },
+    });
+  }
+
   // Build hooks object, conditionally including compaction hooks
   const hooks: Record<string, any> = {
     tool: tools,
@@ -567,6 +1123,8 @@ Try rephrasing your search term or using grep for exact keyword searches.`;
 
   // Customize tool output display in TUI
   hooks["tool.execute.after"] = async (input: any, output: any) => {
+      const morphMeta = { ...output.metadata, provider: "morph", version: PLUGIN_VERSION };
+
       if (input.tool === "morph_edit") {
         const fileMatch = output.output.match(/Applied edit to (.+?)\n/);
         const statsMatch = output.output.match(/\+(\d+) -(\d+) lines/);
@@ -603,11 +1161,7 @@ Try rephrasing your search term or using grep for exact keyword searches.`;
           output.title = `Morph: failed`;
         }
 
-        output.metadata = {
-          ...output.metadata,
-          provider: "morph",
-          version: PLUGIN_VERSION,
-        };
+        output.metadata = morphMeta;
       }
 
       if (input.tool === "warpgrep_codebase_search") {
@@ -625,11 +1179,27 @@ Try rephrasing your search term or using grep for exact keyword searches.`;
           output.title = `WarpGrep: ${fileMatches.length} contexts`;
         }
 
-        output.metadata = {
-          ...output.metadata,
-          provider: "morph",
-          version: PLUGIN_VERSION,
-        };
+        output.metadata = morphMeta;
+      }
+
+      if (input.tool === "public_repo_context_search") {
+        const repoMatch = output.output.match(/^Repository: (.+?)$/m);
+        const fileMatches = output.output.match(/<file path="[^"]+"/g);
+        const repo = repoMatch?.[1];
+
+        if (output.output.match(/^Repository resolution failed/m)) {
+          output.title = repo ? `Public repo: unresolved (${repo})` : "Public repo: unresolved";
+        } else if (output.output.match(/^Public repo context search failed/)) {
+          output.title = repo ? `Public repo: failed (${repo})` : "Public repo: search failed";
+        } else if (output.output.match(/^Repository: .+\n\nNo relevant code found/m)) {
+          output.title = repo ? `Public repo: no results (${repo})` : "Public repo: no results";
+        } else if (fileMatches) {
+          output.title = repo
+            ? `Public repo: ${repo} (${fileMatches.length} contexts)`
+            : `Public repo: ${fileMatches.length} contexts`;
+        }
+
+        output.metadata = morphMeta;
       }
   };
 
