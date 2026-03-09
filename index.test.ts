@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { CompactClient } from "@morphllm/morphsdk";
 
 // These are internal to the plugin but duplicated here for testing.
-// Keep in sync with index.ts.
 const EXISTING_CODE_MARKER = "// ... existing code ...";
 
 function normalizeCodeEditInput(codeEdit: string): string {
@@ -41,6 +40,8 @@ describe("packaged tool-selection instructions", () => {
     expect(content).toContain("`edit`");
     expect(content).toContain("New file creation");
     expect(content).toContain("`write`");
+    expect(content).toContain("`warpgrep_github_search`");
+    expect(content).toContain("Public GitHub repo exploration");
     expect(content).toContain("Tool Exposure Requirement");
     expect(content).toContain("morph_edit: true");
   });
@@ -53,7 +54,9 @@ describe("packaged tool-selection instructions", () => {
     );
     expect(content).toContain("morph_edit");
     expect(content).toContain("warpgrep_codebase_search");
+    expect(content).toContain("warpgrep_github_search");
     expect(content).toContain("MORPH_API_KEY");
+    expect(content).toContain("MORPH_WARPGREP_GITHUB");
     expect(content).toContain("Safety guards");
   });
 });

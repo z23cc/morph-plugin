@@ -1,9 +1,10 @@
 # opencode-morph-plugin
 
-[OpenCode](https://opencode.ai) plugin for [Morph](https://morphllm.com). Three tools:
+[OpenCode](https://opencode.ai) plugin for [Morph](https://morphllm.com). Four tools:
 
 - **Fast Apply** — 10,500+ tok/s code editing with lazy markers
 - **WarpGrep** — fast agentic codebase search, +4% on SWE-Bench Pro, -15% cost
+- **Public Repo Context** — grounded context search for public GitHub repos without cloning
 - **Compaction** — 25,000+ tok/s context compression in sub-2s, +0.6% on SWE-Bench Pro
 
 ![WarpGrep SWE-bench Pro Benchmarks](assets/warpgrep-benchmarks.png)
@@ -114,6 +115,26 @@ Fast agentic codebase search. +4% accuracy on SWE-Bench Pro, -15% cost, sub-6s p
 
 Use for exploratory queries ("how does X work?", "where is Y handled?"). For exact keyword lookup, use `grep` directly.
 
+## Public Repo Context (`warpgrep_github_search`)
+
+Grounded context search for public GitHub repositories. This is the remote-repo sibling of `warpgrep_codebase_search`.
+
+Use it when the code you want to understand is not checked out locally:
+
+```text
+owner_repo: owner/repo
+search_term: Where is request authentication handled?
+```
+
+```text
+github_url: https://github.com/owner/repo
+search_term: How is retry logic implemented?
+```
+
+The tool returns relevant file contexts from Morph's indexed public repo search without cloning the repository into your workspace.
+
+If the repo locator is wrong, the tool now returns a resolver-style failure with `Did you mean ...` suggestions and a concrete retry target. This helps the agent recover when it knows the product or package name but not the canonical GitHub repo.
+
 ## State-of-the-Art Compaction
 
 25,000+ tok/s context compression in under 2 seconds. +0.6% on SWE-Bench Pro, where summarization-based compaction methods all hurt performance. Fires at 140k chars (~35k tokens), before OpenCode's built-in auto-compact (95% context window). Results cached per message set.
@@ -156,6 +177,7 @@ Use for exploratory queries ("how does X work?", "where is Y handled?"). For exa
 | Small exact replacement | `edit` | Faster, no API call |
 | New file creation | `write` | morph_edit only edits existing files |
 | Codebase search/exploration | `warpgrep_codebase_search` | Fast agentic search |
+| Public GitHub repo understanding | `warpgrep_github_search` | Grounded context from indexed public repos |
 | Exact keyword lookup | `grep` | Direct ripgrep, no API call |
 
 ---
@@ -167,6 +189,7 @@ Use for exploratory queries ("how does X work?", "where is Y handled?"). For exa
 | `MORPH_API_KEY` | required | Your Morph API key |
 | `MORPH_EDIT` | `true` | Set `false` to disable Fast Apply |
 | `MORPH_WARPGREP` | `true` | Set `false` to disable WarpGrep |
+| `MORPH_WARPGREP_GITHUB` | `true` | Set `false` to disable public repo context search |
 | `MORPH_COMPACT` | `true` | Set `false` to disable compaction |
 | `MORPH_COMPACT_CHAR_THRESHOLD` | `140000` | Char count before compaction triggers |
 | `MORPH_COMPACT_RATIO` | `0.3` | Compression ratio (0.05-1.0, lower = more aggressive) |
