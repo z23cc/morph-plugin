@@ -121,13 +121,13 @@ Grounded context search for public GitHub repositories. This is the remote-repo 
 Use it when the code you want to understand is not checked out locally:
 
 ```text
-repo: facebook/react
-query: How do hooks work in this codebase?
+owner_repo: owner/repo
+search_term: Where is request authentication handled?
 ```
 
 ```text
-github_url: https://github.com/vercel/next.js
-query: Where are server actions handled?
+github_url: https://github.com/owner/repo
+search_term: How is retry logic implemented?
 ```
 
 The tool returns relevant file contexts from Morph's indexed public repo search without cloning the repository into your workspace.

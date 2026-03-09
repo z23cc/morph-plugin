@@ -50,14 +50,14 @@ strings). Use `grep` or `read` for those.
 
 Use `public_repo_context_search` when you need grounded context from a public
 GitHub repository that is not the current local workspace:
-- "How do React hooks work in facebook/react?"
-- "Where does Next.js handle server actions?"
-- "Find the retry logic in openai/codex"
+- "How is authentication handled in owner/repo?"
+- "Where is retry logic implemented in owner/repo?"
+- "Find the webhook flow in owner/repo"
 
 Use `warpgrep_codebase_search` for the checked-out local repo.
 
 Provide exactly one repository locator to `public_repo_context_search`:
-- `owner_repo` for values like `facebook/react`
+- `owner_repo` for values like `owner/repo`
 - `github_url` for full GitHub URLs
 
 ### Fallback Policy

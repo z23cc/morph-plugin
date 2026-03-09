@@ -20,6 +20,7 @@ const MORPH_WARP_GREP_TIMEOUT = 60000;
 const MORPH_COMPACT_TIMEOUT = 60000;
 const GITHUB_RESOLVER_TIMEOUT = 10000;
 const GITHUB_REPO_API_URL = "https://api.github.com/repos";
+const GITHUB_REPO_SEARCH_URL = "https://api.github.com/search/repositories";
 const GITHUB_REPO_SUGGESTION_LIMIT = 5;
 
 // Compaction config — threshold and ratio are user-tunable
@@ -267,6 +268,31 @@ type GitHubRepoLookupResult =
 
 const GITHUB_OWNER_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
+function tokenizeSuggestionQuery(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length >= 2);
+}
+
+function buildGitHubSuggestionQueries(
+  repo: ResolvedPublicRepoLocator,
+  searchTerm: string,
+): string[] {
+  const [owner, repoName] = repo.github.split("/");
+  const searchTokens = tokenizeSuggestionQuery(searchTerm).slice(0, 3);
+  const queries = new Set<string>();
+
+  if (owner) queries.add(`user:${owner}`);
+  if (owner && repoName) queries.add(`${repoName} user:${owner}`);
+  if (repoName) queries.add(repoName);
+  if (searchTokens.length > 0 && repoName) {
+    queries.add(`${repoName} ${searchTokens.join(" ")}`);
+  }
+
+  return Array.from(queries).slice(0, 4);
+}
+
 function isNotFoundError(error: string): boolean {
   const normalized = error.toLowerCase();
   return (
@@ -292,7 +318,7 @@ function formatPublicRepoResolutionFailure(
     const list = suggestions.map((s) => `- ${s.fullName}${s.description ? ` - ${s.description}` : ""}`).join("\n");
     parts.push(`Did you mean:\n${list}\n\nSuggested next step:\nRetry public_repo_context_search with owner_repo="${suggestions[0]!.fullName}".`);
   }
-  parts.push(`Try:\n- owner_repo: "owner/repo"\n- github_url: "https://github.com/owner/repo"\n- verify the owner and repo spelling\n- use the canonical upstream repository instead of a package name or import path\n\nExamples:\n- anza-xyz/kit\n- facebook/react\n- vercel/next.js`);
+  parts.push(`Try:\n- owner_repo: "owner/repo"\n- github_url: "https://github.com/owner/repo"\n- verify the owner and repo spelling\n- use the canonical upstream repository instead of a package name or import path`);
   return parts.join("\n\n");
 }
 
@@ -306,7 +332,7 @@ function resolvePublicRepoLocator(
     return {
       error: `Error: Provide either owner_repo or github_url, not both.
 
-Use owner_repo for values like "facebook/react" or github_url for full URLs like "https://github.com/facebook/react".`,
+Use owner_repo for values like "owner/repo" or github_url for full URLs like "https://github.com/owner/repo".`,
     };
   }
 
@@ -315,8 +341,8 @@ Use owner_repo for values like "facebook/react" or github_url for full URLs like
       error: `Error: Missing repository target.
 
 Provide exactly one of:
-- owner_repo: "facebook/react"
-- github_url: "https://github.com/facebook/react"`,
+- owner_repo: "owner/repo"
+- github_url: "https://github.com/owner/repo"`,
     };
   }
 
@@ -328,9 +354,9 @@ Provide exactly one of:
 Received: "${ownerRepo}"
 
 Examples:
-- "facebook/react"
-- "vercel/next.js"
-- "anza-xyz/kit"
+- "owner/repo"
+- "org/project"
+- "team/package"
 
 If you have a full URL, use github_url instead.`,
       };
@@ -353,7 +379,7 @@ If you have a full URL, use github_url instead.`,
 Received: "${githubUrl}"
 
 Example:
-- "https://github.com/facebook/react"`,
+- "https://github.com/owner/repo"`,
     };
   }
 
@@ -364,7 +390,7 @@ Example:
 Received host: "${parsed.hostname}"
 
 Example:
-- "https://github.com/facebook/react"`,
+- "https://github.com/owner/repo"`,
     };
   }
 
@@ -380,7 +406,7 @@ Example:
 Received: "${githubUrl}"
 
 Example:
-- "https://github.com/facebook/react"`,
+- "https://github.com/owner/repo"`,
     };
   }
 
@@ -454,33 +480,55 @@ async function lookupGitHubRepository(
 
 async function fetchGitHubRepoSuggestions(
   repo: ResolvedPublicRepoLocator,
+  searchTerm: string,
 ): Promise<GitHubRepoSuggestion[]> {
-  const owner = repo.github.split("/")[0];
-  if (!owner) return [];
   return withGitHubTimeout(async (signal) => {
-    const url = `https://api.github.com/search/repositories?q=user:${owner}&sort=stars&order=desc&per_page=5`;
-    const response = await fetch(url, { headers: githubHeaders(), signal });
-    if (!response.ok) return [];
-    const body = (await response.json()) as {
-      items?: Array<{
-        full_name?: string;
-        html_url?: string;
-        description?: string | null;
-        stargazers_count?: number;
-        name?: string;
-        owner?: { login?: string };
-      }>;
-    };
-    return (body.items || [])
-      .filter((item) => item.full_name && item.html_url && item.name && item.owner?.login)
-      .map((item) => ({
-        fullName: item.full_name!,
-        htmlUrl: item.html_url!,
-        description: item.description || undefined,
-        stars: item.stargazers_count || 0,
-        ownerLogin: item.owner!.login!,
-        name: item.name!,
-      }));
+    const candidates = new Map<string, GitHubRepoSuggestion>();
+    const queries = buildGitHubSuggestionQueries(repo, searchTerm);
+
+    for (const query of queries) {
+      const url = new URL(GITHUB_REPO_SEARCH_URL);
+      url.searchParams.set("q", query);
+      url.searchParams.set("sort", "stars");
+      url.searchParams.set("order", "desc");
+      url.searchParams.set("per_page", String(GITHUB_REPO_SUGGESTION_LIMIT));
+
+      const response = await fetch(url.toString(), {
+        headers: githubHeaders(),
+        signal,
+      });
+      if (!response.ok) continue;
+
+      const body = (await response.json()) as {
+        items?: Array<{
+          full_name?: string;
+          html_url?: string;
+          description?: string | null;
+          stargazers_count?: number;
+          name?: string;
+          owner?: { login?: string };
+        }>;
+      };
+
+      for (const item of body.items || []) {
+        if (!item.full_name || !item.html_url || !item.name || !item.owner?.login) {
+          continue;
+        }
+        candidates.set(item.full_name, {
+          fullName: item.full_name,
+          htmlUrl: item.html_url,
+          description: item.description || undefined,
+          stars: item.stargazers_count || 0,
+          ownerLogin: item.owner.login,
+          name: item.name,
+        });
+      }
+    }
+
+    return Array.from(candidates.values()).slice(
+      0,
+      GITHUB_REPO_SUGGESTION_LIMIT,
+    );
   });
 }
 
@@ -826,15 +874,15 @@ Try rephrasing your search term or using grep for exact keyword searches.`;
         description: `Grounded code context search for public GitHub repositories. Uses Morph's hosted WarpGrep to search indexed public repos without cloning them locally.
 
 Use this when you need to understand an external codebase, for example:
-- "How do React hooks work in this repo?"
-- "Find how Next.js handles server actions"
-- "Where does Express parse JSON bodies?"
+- "How is authentication handled in this repo?"
+- "Find the retry logic in the request pipeline"
+- "Where are webhook handlers implemented?"
 
 This tool is for public remote repos. For the current checked-out workspace, use warpgrep_codebase_search instead.
 
 Provide exactly one repository locator:
-- owner_repo: "facebook/react"
-- github_url: "https://github.com/facebook/react"`,
+- owner_repo: "owner/repo"
+- github_url: "https://github.com/owner/repo"`,
 
         args: {
           search_term: tool.schema
@@ -846,13 +894,13 @@ Provide exactly one repository locator:
             .string()
             .optional()
             .describe(
-              'GitHub repository in "owner/repo" format, for example "facebook/react"',
+              'GitHub repository in "owner/repo" format, for example "owner/repo"',
             ),
           github_url: tool.schema
             .string()
             .optional()
             .describe(
-              'Full GitHub repository URL, for example "https://github.com/facebook/react"',
+              'Full GitHub repository URL, for example "https://github.com/owner/repo"',
             ),
           branch: tool.schema
             .string()
@@ -882,6 +930,7 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`;
           if (repoLookup.status === "not_found") {
             const suggestions = await fetchGitHubRepoSuggestions(
               repo,
+              args.search_term,
             ).catch(() => []);
             return formatPublicRepoResolutionFailure(
               repo,
@@ -916,6 +965,7 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`;
               if (isNotFoundError(result.error || "")) {
                 const suggestions = await fetchGitHubRepoSuggestions(
                   repo,
+                  args.search_term,
                 ).catch(() => []);
                 return formatPublicRepoResolutionFailure(
                   repo,
@@ -937,6 +987,7 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`;
             if (isNotFoundError(error.message)) {
               const suggestions = await fetchGitHubRepoSuggestions(
                 repo,
+                args.search_term,
               ).catch(() => []);
               return formatPublicRepoResolutionFailure(
                 repo,
