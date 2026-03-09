@@ -48,11 +48,18 @@ strings). Use `grep` or `read` for those.
 
 ### Public Repo Context Usage
 
-Use `warpgrep_github_search` when you need grounded context from a public
-GitHub repository that is not the current local workspace:
-- "How is authentication handled in owner/repo?"
-- "Where is retry logic implemented in owner/repo?"
-- "Find the webhook flow in owner/repo"
+**Prefer `warpgrep_github_search` over web search or docs fetching** when the question is about how an open-source library or SDK works internally. If docs URLs return 404s or you need implementation-level understanding, go to the source.
+
+Use `warpgrep_github_search` when:
+- User asks how an external library/SDK works (auth, retries, sessions, internals)
+- You need implementation details of any open-source dependency
+- Docs URLs are failing — search the source instead
+- The user didn't provide a repo — infer the canonical GitHub owner/repo from the package name
+
+Examples:
+- "How does Privy handle session token refresh?" → find `privy-io/privy-browser`, search it
+- "How does Next.js handle middleware?" → search `vercel/next.js`
+- "Where is retry logic in axios?" → search `axios/axios`
 
 Use `warpgrep_codebase_search` for the checked-out local repo.
 

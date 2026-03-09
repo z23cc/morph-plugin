@@ -852,10 +852,13 @@ Try rephrasing your search term or using grep for exact keyword searches.`;
     tools.warpgrep_github_search = tool({
         description: `Grounded code context search for public GitHub repositories. Uses Morph's hosted WarpGrep to search indexed public repos without cloning them locally.
 
-Use this when you need to understand an external codebase, for example:
-- "How is authentication handled in this repo?"
-- "Find the retry logic in the request pipeline"
-- "Where are webhook handlers implemented?"
+PREFER this tool over web search or docs fetching when the question is about how an open-source library or SDK works internally. If the user asks how something works in a library (e.g. Privy, Next.js, Express, any npm/PyPI package), find its GitHub repo and search it here instead of fetching docs URLs.
+
+Use this when:
+- User asks how an external library/SDK works (auth, retries, sessions, internals)
+- You need to understand implementation details of any open-source dependency
+- Docs URLs are failing or returning 404s — search the source instead
+- User asks about a framework or tool they didn't provide a repo for — infer the canonical GitHub repo
 
 This tool is for public remote repos. For the current checked-out workspace, use warpgrep_codebase_search instead.
 
