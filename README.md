@@ -24,29 +24,30 @@ export MORPH_API_KEY="sk-..."
 
 ### 2. Install the plugin
 
-Add to `~/.config/opencode/plugin/`:
+Recommended: install it as an npm package in your OpenCode config directory.
 
 ```bash
-ln -s /path/to/opencode-morph-plugin/index.ts ~/.config/opencode/plugin/morph.ts
+cd ~/.config/opencode
+npm i @morphllm/opencode-morph-plugin
 ```
 
-Add the SDK dependency to `~/.config/opencode/package.json`:
+Then register it in `~/.config/opencode/opencode.json`:
 
 ```json
 {
-  "dependencies": {
-    "@morphllm/morphsdk": "^0.2.134"
-  }
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@morphllm/opencode-morph-plugin"],
+  "instructions": [
+    "node_modules/@morphllm/opencode-morph-plugin/instructions/morph-tools.md"
+  ]
 }
 ```
 
-OpenCode runs `bun install` at startup to install it.
-
-> When published as an npm package: `{ "plugin": ["@morphllm/opencode-morph-plugin"] }`
+This follows OpenCode's recommended npm plugin flow: declare the plugin in `opencode.json`, and let OpenCode load it from your installed dependencies.
 
 ### 3. Add tool routing instructions (recommended)
 
-Copy the packaged routing policy so the LLM picks the right tool:
+If you prefer to manage instructions separately, copy the packaged routing policy so the LLM picks the right tool:
 
 ```bash
 cp instructions/morph-tools.md ~/.config/opencode/instructions/
