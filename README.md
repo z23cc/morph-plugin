@@ -114,7 +114,7 @@ Fast agentic codebase search. +4% accuracy on SWE-Bench Pro, -15% cost, sub-6s p
 
 Use for exploratory queries ("how does X work?", "where is Y handled?"). For exact keyword lookup, use `grep` directly.
 
-## Public Repo Context (`public_repo_context_search`)
+## Public Repo Context (`warpgrep_github_search`)
 
 Grounded context search for public GitHub repositories. This is the remote-repo sibling of `warpgrep_codebase_search`.
 
@@ -176,7 +176,7 @@ If the repo locator is wrong, the tool now returns a resolver-style failure with
 | Small exact replacement | `edit` | Faster, no API call |
 | New file creation | `write` | morph_edit only edits existing files |
 | Codebase search/exploration | `warpgrep_codebase_search` | Fast agentic search |
-| Public GitHub repo understanding | `public_repo_context_search` | Grounded context from indexed public repos |
+| Public GitHub repo understanding | `warpgrep_github_search` | Grounded context from indexed public repos |
 | Exact keyword lookup | `grep` | Direct ripgrep, no API call |
 
 ---
@@ -188,7 +188,7 @@ If the repo locator is wrong, the tool now returns a resolver-style failure with
 | `MORPH_API_KEY` | required | Your Morph API key |
 | `MORPH_EDIT` | `true` | Set `false` to disable Fast Apply |
 | `MORPH_WARPGREP` | `true` | Set `false` to disable WarpGrep |
-| `MORPH_PUBLIC_REPO_CONTEXT_SEARCH` | `true` | Set `false` to disable public repo context search |
+| `MORPH_WARPGREP_GITHUB` | `true` | Set `false` to disable public repo context search |
 | `MORPH_COMPACT` | `true` | Set `false` to disable compaction |
 | `MORPH_COMPACT_CHAR_THRESHOLD` | `140000` | Char count before compaction triggers |
 | `MORPH_COMPACT_RATIO` | `0.3` | Compression ratio (0.05-1.0, lower = more aggressive) |

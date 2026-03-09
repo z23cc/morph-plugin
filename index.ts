@@ -42,8 +42,8 @@ const COMPACT_RATIO = parseFloat(
  */
 const MORPH_EDIT_ENABLED = process.env.MORPH_EDIT !== "false";
 const MORPH_WARPGREP_ENABLED = process.env.MORPH_WARPGREP !== "false";
-const MORPH_PUBLIC_REPO_CONTEXT_ENABLED =
-  process.env.MORPH_PUBLIC_REPO_CONTEXT_SEARCH !== "false";
+const MORPH_WARPGREP_GITHUB_ENABLED =
+  process.env.MORPH_WARPGREP_GITHUB !== "false";
 const MORPH_COMPACT_ENABLED = process.env.MORPH_COMPACT !== "false";
 
 /**
@@ -316,7 +316,7 @@ function formatPublicRepoResolutionFailure(
   if (detail) parts.push(`Resolver detail: ${detail}`);
   if (suggestions.length > 0) {
     const list = suggestions.map((s) => `- ${s.fullName}${s.description ? ` - ${s.description}` : ""}`).join("\n");
-    parts.push(`Did you mean:\n${list}\n\nSuggested next step:\nRetry public_repo_context_search with owner_repo="${suggestions[0]!.fullName}".`);
+    parts.push(`Did you mean:\n${list}\n\nSuggested next step:\nRetry warpgrep_github_search with owner_repo="${suggestions[0]!.fullName}".`);
   }
   parts.push(`Try:\n- owner_repo: "owner/repo"\n- github_url: "https://github.com/owner/repo"\n- verify the owner and repo spelling\n- use the canonical upstream repository instead of a package name or import path`);
   return parts.join("\n\n");
@@ -559,7 +559,7 @@ const MorphPlugin: Plugin = async ({ directory, client }) => {
     const features = [
       MORPH_EDIT_ENABLED && "edit",
       MORPH_WARPGREP_ENABLED && "warpgrep",
-      MORPH_PUBLIC_REPO_CONTEXT_ENABLED && "public-repo-context",
+      MORPH_WARPGREP_GITHUB_ENABLED && "warpgrep-github",
       MORPH_COMPACT_ENABLED && "compact",
     ].filter(Boolean);
     await log("info", `Plugin v${PLUGIN_VERSION} loaded [${features.join(", ")}]`);
@@ -869,8 +869,8 @@ Try rephrasing your search term or using grep for exact keyword searches.`;
     });
   }
 
-  if (MORPH_PUBLIC_REPO_CONTEXT_ENABLED) {
-    tools.public_repo_context_search = tool({
+  if (MORPH_WARPGREP_GITHUB_ENABLED) {
+    tools.warpgrep_github_search = tool({
         description: `Grounded code context search for public GitHub repositories. Uses Morph's hosted WarpGrep to search indexed public repos without cloning them locally.
 
 Use this when you need to understand an external codebase, for example:
@@ -914,7 +914,7 @@ Provide exactly one repository locator:
           if (!MORPH_API_KEY) {
             return `Error: MORPH_API_KEY not configured.
 
-To use public_repo_context_search, set the MORPH_API_KEY environment variable.
+To use warpgrep_github_search, set the MORPH_API_KEY environment variable.
 Get your API key at: https://morphllm.com/dashboard/api-keys`;
           }
 
@@ -1069,7 +1069,7 @@ Try a different repository locator, a different branch, or a more specific searc
         output.metadata = morphMeta;
       }
 
-      if (input.tool === "public_repo_context_search") {
+      if (input.tool === "warpgrep_github_search") {
         const repoMatch = output.output.match(/^Repository: (.+?)$/m);
         const fileMatches = output.output.match(/<file path="[^"]+"/g);
         const repo = repoMatch?.[1];

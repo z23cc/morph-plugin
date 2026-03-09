@@ -40,7 +40,7 @@ describe("packaged tool-selection instructions", () => {
     expect(content).toContain("`edit`");
     expect(content).toContain("New file creation");
     expect(content).toContain("`write`");
-    expect(content).toContain("`public_repo_context_search`");
+    expect(content).toContain("`warpgrep_github_search`");
     expect(content).toContain("Public GitHub repo exploration");
     expect(content).toContain("Tool Exposure Requirement");
     expect(content).toContain("morph_edit: true");
@@ -54,9 +54,9 @@ describe("packaged tool-selection instructions", () => {
     );
     expect(content).toContain("morph_edit");
     expect(content).toContain("warpgrep_codebase_search");
-    expect(content).toContain("public_repo_context_search");
+    expect(content).toContain("warpgrep_github_search");
     expect(content).toContain("MORPH_API_KEY");
-    expect(content).toContain("MORPH_PUBLIC_REPO_CONTEXT_SEARCH");
+    expect(content).toContain("MORPH_WARPGREP_GITHUB");
     expect(content).toContain("Safety guards");
   });
 });

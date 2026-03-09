@@ -26,7 +26,7 @@ faster or more reliable than exact-string replacement.
 | New file creation | `write` | `morph_edit` only edits existing files |
 | Codebase search/exploration | `warpgrep_codebase_search` | Multi-turn agentic search with ripgrep |
 | Find where something is defined/used | `warpgrep_codebase_search` | Semantic search across files |
-| Public GitHub repo exploration | `public_repo_context_search` | Grounded context from indexed public repos |
+| Public GitHub repo exploration | `warpgrep_github_search` | Grounded context from indexed public repos |
 | Exact keyword/function name search | `grep` | Direct ripgrep, no API call |
 
 ### When NOT to Use morph_edit
@@ -48,7 +48,7 @@ strings). Use `grep` or `read` for those.
 
 ### Public Repo Context Usage
 
-Use `public_repo_context_search` when you need grounded context from a public
+Use `warpgrep_github_search` when you need grounded context from a public
 GitHub repository that is not the current local workspace:
 - "How is authentication handled in owner/repo?"
 - "Where is retry logic implemented in owner/repo?"
@@ -56,7 +56,7 @@ GitHub repository that is not the current local workspace:
 
 Use `warpgrep_codebase_search` for the checked-out local repo.
 
-Provide exactly one repository locator to `public_repo_context_search`:
+Provide exactly one repository locator to `warpgrep_github_search`:
 - `owner_repo` for values like `owner/repo`
 - `github_url` for full GitHub URLs
 
@@ -66,7 +66,7 @@ Provide exactly one repository locator to `public_repo_context_search`:
 - If `morph_edit` is blocked in readonly agents, switch to a write-capable agent
 - If the change requires replacing the entire file, use `write`
 - If `warpgrep_codebase_search` fails, fall back to `grep` + `read`
-- If `public_repo_context_search` fails, clone the repo only if the task justifies local setup cost
+- If `warpgrep_github_search` fails, clone the repo only if the task justifies local setup cost
 
 ### Setup Notes
 
@@ -85,7 +85,7 @@ sub-agent must also expose tools in its tool manifest.
   large or scattered edits.
 - Keep readonly agents blocked unless you explicitly want them to edit files.
 - `warpgrep_codebase_search` is safe for all agents (read-only operation).
-- `public_repo_context_search` is safe for all agents (read-only operation).
+- `warpgrep_github_search` is safe for all agents (read-only operation).
 
 ### Anti-Patterns
 
@@ -93,4 +93,4 @@ sub-agent must also expose tools in its tool manifest.
 - Do NOT use `morph_edit` for creating new files
 - Do NOT force `morph_edit` from readonly agents unless explicitly configured
 - Do NOT use `warpgrep_codebase_search` for exact string/keyword lookups
-- Do NOT use `public_repo_context_search` for the current checked-out local repo
+- Do NOT use `warpgrep_github_search` for the current checked-out local repo
