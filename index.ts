@@ -17,14 +17,17 @@ const MORPH_API_KEY = process.env.MORPH_API_KEY;
 const MORPH_API_URL = "https://api.morphllm.com";
 const MORPH_TIMEOUT = 30000;
 const MORPH_WARP_GREP_TIMEOUT = 60000;
-const MORPH_COMPACT_TIMEOUT = 120000;
+const MORPH_COMPACT_TIMEOUT = 60000;
 
 // Compaction config — threshold and ratio are user-tunable
 const COMPACT_CHAR_THRESHOLD = parseInt(
-  process.env.MORPH_COMPACT_CHAR_THRESHOLD || "140000",
+  process.env.MORPH_COMPACT_CHAR_THRESHOLD || "100000",
   10,
 );
-const COMPACT_PRESERVE_RECENT = 6;
+const COMPACT_PRESERVE_RECENT = parseInt(
+  process.env.MORPH_COMPACT_PRESERVE_RECENT || "6",
+  10,
+);
 const COMPACT_RATIO = parseFloat(
   process.env.MORPH_COMPACT_RATIO || "0.3",
 );

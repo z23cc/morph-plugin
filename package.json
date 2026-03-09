@@ -1,23 +1,29 @@
 {
-  "name": "opencode-morph-plugin",
+  "name": "@morphllm/opencode-morph-plugin",
   "version": "2.0.0",
   "description": "OpenCode plugin for Morph SDK - fast apply, WarpGrep codebase search",
   "type": "module",
-  "main": "index.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
   "files": [
-    "index.ts",
+    "dist",
     "README.md",
     "LICENSE",
     "instructions/"
   ],
   "scripts": {
+    "build": "tsc -p tsconfig.json",
     "test": "bun test",
-    "typecheck": "tsc --noEmit",
-    "ci": "bun test && tsc --noEmit"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "ci": "bun test && bun run build && bun run typecheck"
   },
   "dependencies": {
+    "@morphllm/morphsdk": "^0.2.134",
     "@opencode-ai/plugin": "latest",
-    "@morphllm/morphsdk": "^0.2.134"
+    "@opencode-ai/sdk": "^1.2.22"
   },
   "devDependencies": {
     "bun-types": "latest",

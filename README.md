@@ -42,7 +42,7 @@ Add the SDK dependency to `~/.config/opencode/package.json`:
 
 OpenCode runs `bun install` at startup to install it.
 
-> When published as an npm package: `{ "plugin": ["opencode-morph-plugin"] }`
+> When published as an npm package: `{ "plugin": ["@morphllm/opencode-morph-plugin"] }`
 
 ### 3. Add tool routing instructions (recommended)
 
