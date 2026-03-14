@@ -38,10 +38,14 @@
     "code-search",
     "code-editing"
   ],
-  "author": "JRedeker",
+  "author": "Morph",
   "repository": {
     "type": "git",
-    "url": "https://github.com/JRedeker/opencode-morph-fast-apply.git"
+    "url": "https://github.com/morphllm/opencode-morph-plugin.git"
   },
+  "bugs": {
+    "url": "https://github.com/morphllm/opencode-morph-plugin/issues"
+  },
+  "homepage": "https://github.com/morphllm/opencode-morph-plugin#readme",
   "license": "MIT"
 }

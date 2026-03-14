@@ -1,5 +1,7 @@
 # opencode-morph-plugin
 
+Source repository: https://github.com/morphllm/opencode-morph-plugin
+
 [OpenCode](https://opencode.ai) plugin for [Morph](https://morphllm.com). Four tools:
 
 - **Fast Apply** — 10,500+ tok/s code editing with lazy markers
@@ -48,10 +50,10 @@ This follows OpenCode's recommended npm plugin flow: declare the plugin in `open
 
 ### 3. Add tool routing instructions (recommended)
 
-If you prefer to manage instructions separately, copy the packaged routing policy so the LLM picks the right tool:
+If you prefer to manage instructions separately, copy the packaged routing policy from the installed npm package so the LLM picks the right tool:
 
 ```bash
-cp instructions/morph-tools.md ~/.config/opencode/instructions/
+cp node_modules/@morphllm/opencode-morph-plugin/instructions/morph-tools.md ~/.config/opencode/instructions/
 ```
 
 Then reference it in your `opencode.json`:
