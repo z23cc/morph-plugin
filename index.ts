@@ -11,7 +11,6 @@ import { type Plugin, tool } from "@opencode-ai/plugin";
 import { MorphClient, WarpGrepClient, CompactClient } from "@morphllm/morphsdk";
 import type { WarpGrepResult, CompactResult } from "@morphllm/morphsdk";
 import type { Part, TextPart, ToolPart, Message } from "@opencode-ai/sdk";
-import { createHash } from "node:crypto";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 
 // Config from environment — only MORPH_API_KEY is required
@@ -26,20 +25,21 @@ const GITHUB_REPO_SEARCH_URL = "https://api.github.com/search/repositories";
 const GITHUB_REPO_SUGGESTION_LIMIT = 5;
 
 // Compaction config — threshold and ratio are user-tunable
-const COMPACT_CHAR_THRESHOLD = parseInt(
-  process.env.MORPH_COMPACT_CHAR_THRESHOLD || "100000",
-  10,
+// Approximate: ~3 characters per token (rough estimate for threshold math)
+const CHARS_PER_TOKEN = 3;
+
+// Compact when effective context reaches this fraction of model's max context window
+const COMPACT_CONTEXT_THRESHOLD = parseFloat(
+  process.env.MORPH_COMPACT_CONTEXT_THRESHOLD || "0.7",
 );
+
+// Number of recent messages to keep uncompacted (full fidelity for the LLM)
 const COMPACT_PRESERVE_RECENT = parseInt(
   process.env.MORPH_COMPACT_PRESERVE_RECENT || "6",
   10,
 );
 const COMPACT_RATIO = parseFloat(
   process.env.MORPH_COMPACT_RATIO || "0.3",
-);
-const COMPACT_MIN_UNCACHED_CHARS = parseInt(
-  process.env.MORPH_COMPACT_MIN_UNCACHED_CHARS || "16000",
-  10,
 );
 
 /**
@@ -101,16 +101,24 @@ const compactClient = MORPH_API_KEY
   : null;
 
 /**
- * Per-session compaction cache.
- * Stores incrementally compacted prefix chunks so a growing conversation
- * can reuse prior compaction work instead of recompacting the full old window.
+ * Model context window size in tokens. Updated from chat.params hook.
+ * Default is conservative — actual value captured on first LLM call.
  */
-type CompactCacheChunk = {
-  messageKeys: string[];
-  result: CompactResult;
-};
+let modelContextTokens = 200_000;
 
-const compactCache = new Map<string, CompactCacheChunk[]>();
+/**
+ * Frozen compaction state. Once messages are compacted, the result is
+ * frozen and reused identically on every subsequent messages.transform call.
+ * This preserves prompt cache stability (the prefix bytes never change).
+ *
+ * On re-compaction, the old frozen block is discarded entirely and a new
+ * one is built from only the uncompacted messages (never double-compact).
+ */
+let compactionState: {
+  frozenMessages: { info: Message; parts: Part[] }[];
+  compactedUpToIndex: number;
+  frozenChars: number;
+} | null = null;
 
 /**
  * Normalize code_edit input from LLM tool calls.
@@ -200,70 +208,6 @@ function estimateTotalChars(
   return total;
 }
 
-function getMessageCacheKey(message: { info: Message; parts: Part[] }): string {
-  return createHash("sha256")
-    .update(
-      JSON.stringify({
-        id: message.info.id,
-        role: message.info.role,
-        parts: message.parts.map((part) => ({
-          type: part.type,
-          content: serializePart(part),
-        })),
-      }),
-    )
-    .digest("hex");
-}
-
-function getMessageCacheKeys(
-  messages: { info: Message; parts: Part[] }[],
-): string[] {
-  return messages.map(getMessageCacheKey);
-}
-
-function getMatchedCompactChunks(
-  cachedChunks: CompactCacheChunk[],
-  messageKeys: string[],
-): { matchedChunks: CompactCacheChunk[]; matchedMessageCount: number } {
-  const matchedChunks: CompactCacheChunk[] = [];
-  let matchedMessageCount = 0;
-
-  for (const chunk of cachedChunks) {
-    const nextCount = matchedMessageCount + chunk.messageKeys.length;
-    if (nextCount > messageKeys.length) break;
-
-    const matches = chunk.messageKeys.every(
-      (key, index) => messageKeys[matchedMessageCount + index] === key,
-    );
-    if (!matches) break;
-
-    matchedChunks.push(chunk);
-    matchedMessageCount = nextCount;
-  }
-
-  return { matchedChunks, matchedMessageCount };
-}
-
-function buildCompactedMessagesFromChunks(
-  chunks: CompactCacheChunk[],
-  sourceMessages: { info: Message; parts: Part[] }[],
-): { info: Message; parts: Part[] }[] {
-  const compactedMessages: { info: Message; parts: Part[] }[] = [];
-  let offset = 0;
-
-  for (const chunk of chunks) {
-    compactedMessages.push(
-      buildCompactedMessage(
-        sourceMessages[offset]!,
-        chunk.result,
-        chunk.messageKeys.length,
-      ),
-    );
-    offset += chunk.messageKeys.length;
-  }
-
-  return compactedMessages;
-}
 
 function resolveSessionFilepath(
   targetFilepath: string,
@@ -1255,59 +1199,92 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`;
   };
 
   if (MORPH_COMPACT_ENABLED) {
-    // Compaction: compress older messages via Morph before the LLM
-    // sees them. This preempts OpenCode's built-in auto-compact (95% context).
-    // Messages stay in the DB untouched; the LLM just sees a compressed view.
+    // Capture model context window from chat.params (fires every LLM call)
+    hooks["chat.params"] = async (input: any) => {
+      if (input.model?.limit?.context) {
+        modelContextTokens = input.model.limit.context;
+      }
+    };
+
+    // Compaction: compress older messages via Morph, then FREEZE the result.
+    // The frozen block is reused byte-for-byte on every subsequent call,
+    // preserving the LLM provider's prompt prefix cache.
+    // Re-compaction only fires when the threshold is crossed again.
     hooks["experimental.chat.messages.transform"] = async (_input: any, output: any) => {
       if (!MORPH_API_KEY) return;
 
       const messages = output.messages;
       if (messages.length < COMPACT_PRESERVE_RECENT + 2) return;
 
-      const totalChars = estimateTotalChars(messages);
-      if (totalChars < COMPACT_CHAR_THRESHOLD) return;
+      // Approximate char threshold from model context window
+      const charThreshold = modelContextTokens * COMPACT_CONTEXT_THRESHOLD * CHARS_PER_TOKEN;
 
-      // Split: older messages to compact, recent messages to keep intact
-      const olderMessages = messages.slice(0, -COMPACT_PRESERVE_RECENT);
-      const recentMessages = messages.slice(-COMPACT_PRESERVE_RECENT);
+      if (compactionState) {
+        // We have a frozen block from a previous compaction.
+        // Messages after the compaction boundary are uncompacted.
+        const uncompacted = messages.slice(compactionState.compactedUpToIndex);
+        const effectiveChars = compactionState.frozenChars + estimateTotalChars(uncompacted);
 
-      if (olderMessages.length === 0) return;
+        if (effectiveChars < charThreshold) {
+          // Under threshold — reuse frozen block as-is (stable prefix = cache hit)
+          output.messages = [...compactionState.frozenMessages, ...uncompacted];
+          return;
+        }
 
-      const sessionID = olderMessages[0]!.info.sessionID;
-      const olderMessageKeys = getMessageCacheKeys(olderMessages);
-      const sessionCache = compactCache.get(sessionID) ?? [];
-      const { matchedChunks, matchedMessageCount } = getMatchedCompactChunks(
-        sessionCache,
-        olderMessageKeys,
-      );
-      if (matchedChunks.length !== sessionCache.length) {
-        compactCache.set(sessionID, matchedChunks);
-      }
+        // Over threshold again — discard old frozen block, compact only the
+        // uncompacted messages (never double-compact).
+        if (uncompacted.length <= COMPACT_PRESERVE_RECENT) return;
 
-      const cachedCompactedMessages = buildCompactedMessagesFromChunks(
-        matchedChunks,
-        olderMessages,
-      );
-      const uncachedOlderMessages = olderMessages.slice(matchedMessageCount);
+        const toCompact = uncompacted.slice(0, -COMPACT_PRESERVE_RECENT);
+        const recent = uncompacted.slice(-COMPACT_PRESERVE_RECENT);
 
-      if (uncachedOlderMessages.length === 0) {
-        output.messages = [...cachedCompactedMessages, ...recentMessages];
-        return;
-      }
+        const compactInput = messagesToCompactInput(toCompact);
+        if (compactInput.length === 0) return;
 
-      const uncachedChars = estimateTotalChars(uncachedOlderMessages);
-      if (uncachedChars < COMPACT_MIN_UNCACHED_CHARS) {
-        if (cachedCompactedMessages.length > 0) {
-          output.messages = [
-            ...cachedCompactedMessages,
-            ...uncachedOlderMessages,
-            ...recentMessages,
-          ];
+        try {
+          const result = await compactClient!.compact({
+            messages: compactInput,
+            compressionRatio: COMPACT_RATIO,
+            preserveRecent: 0,
+          });
+
+          const frozen = buildCompactedMessages(toCompact, result);
+          compactionState = {
+            frozenMessages: frozen,
+            compactedUpToIndex: messages.length - recent.length,
+            frozenChars: estimateTotalChars(frozen),
+          };
+          output.messages = [...frozen, ...recent];
+
+          await log(
+            "info",
+            `Compact (re): ${toCompact.length} messages → ${Math.round(result.usage.compression_ratio * 100)}% kept (${result.usage.processing_time_ms}ms). Old frozen block discarded.`,
+          );
+          await showToast(
+            "success",
+            `${toCompact.length} messages re-compacted (${Math.round(result.usage.compression_ratio * 100)}% kept) | ${result.usage.processing_time_ms}ms`,
+          );
+        } catch (err) {
+          // On failure, use stale frozen block + uncompacted as best-effort
+          output.messages = [...compactionState.frozenMessages, ...uncompacted];
+          await log(
+            "warn",
+            `Compact (re) failed: ${(err as Error).message}. Using stale frozen block.`,
+          );
         }
         return;
       }
 
-      const compactInput = messagesToCompactInput(uncachedOlderMessages);
+      // No frozen block yet — check if first compaction is needed
+      const totalChars = estimateTotalChars(messages);
+      if (totalChars < charThreshold) return;
+
+      const toCompact = messages.slice(0, -COMPACT_PRESERVE_RECENT);
+      const recent = messages.slice(-COMPACT_PRESERVE_RECENT);
+
+      if (toCompact.length === 0) return;
+
+      const compactInput = messagesToCompactInput(toCompact);
       if (compactInput.length === 0) return;
 
       try {
@@ -1317,39 +1294,23 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`;
           preserveRecent: 0,
         });
 
-        const newChunk: CompactCacheChunk = {
-          messageKeys: olderMessageKeys.slice(matchedMessageCount),
-          result,
+        const frozen = buildCompactedMessages(toCompact, result);
+        compactionState = {
+          frozenMessages: frozen,
+          compactedUpToIndex: messages.length - recent.length,
+          frozenChars: estimateTotalChars(frozen),
         };
-        const updatedChunks = [...matchedChunks, newChunk];
-        compactCache.set(sessionID, updatedChunks);
-
-        const compactedMsg = buildCompactedMessage(
-          uncachedOlderMessages[0]!,
-          result,
-          uncachedOlderMessages.length,
-        );
-        output.messages = [
-          ...cachedCompactedMessages,
-          compactedMsg,
-          ...recentMessages,
-        ];
+        output.messages = [...frozen, ...recent];
 
         await log(
           "info",
-          matchedMessageCount > 0
-            ? `Compact: ${uncachedOlderMessages.length} new messages → ${Math.round(result.usage.compression_ratio * 100)}% kept (${result.usage.processing_time_ms}ms, ${matchedMessageCount} cached)`
-            : `Compact: ${uncachedOlderMessages.length} messages → ${Math.round(result.usage.compression_ratio * 100)}% kept (${result.usage.processing_time_ms}ms)`,
+          `Compact: ${toCompact.length} messages → ${Math.round(result.usage.compression_ratio * 100)}% kept (${result.usage.processing_time_ms}ms)`,
         );
         await showToast(
           "success",
-          matchedMessageCount > 0
-            ? `${uncachedOlderMessages.length} new messages compacted (${matchedMessageCount} cached) | ${result.usage.processing_time_ms}ms`
-            : `${uncachedOlderMessages.length} messages compacted (${Math.round(result.usage.compression_ratio * 100)}% kept) | ${result.usage.processing_time_ms}ms`,
+          `${toCompact.length} messages compacted (${Math.round(result.usage.compression_ratio * 100)}% kept) | ${result.usage.processing_time_ms}ms`,
         );
       } catch (err) {
-        // On failure, leave messages unchanged — OpenCode's built-in compaction
-        // will handle context overflow if needed
         await log(
           "warn",
           `Compact failed: ${(err as Error).message}. Falling back to native compaction.`,
@@ -1360,8 +1321,6 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`;
     // When OpenCode's native compaction triggers, log it
     hooks["experimental.session.compacting"] = async (_input: any, output: any) => {
       await log("debug", "OpenCode native compaction triggered");
-      // We could add extra context here but the compaction
-      // via messages.transform should prevent this from firing often
       output.context.push(
         "Note: Morph compact plugin is active. Older messages may already be compressed.",
       );
@@ -1372,29 +1331,54 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`;
 };
 
 /**
- * Build a synthetic message containing the compacted output.
- * Uses the first old message's metadata as a template.
+ * Build compacted messages preserving per-message structure.
+ * Each original message maps to a compacted version with the same role
+ * and a single TextPart containing the compacted content.
+ * IDs are deterministic (derived from original message ID) so the
+ * frozen block is byte-stable across repeated messages.transform calls.
  */
-function buildCompactedMessage(
-  templateMsg: { info: Message; parts: Part[] },
+function buildCompactedMessages(
+  originalMessages: { info: Message; parts: Part[] }[],
   result: CompactResult,
-  messageCount: number,
-): { info: Message; parts: Part[] } {
-  return {
-    info: {
-      ...templateMsg.info,
-      role: "user" as const,
-    } as Message,
-    parts: [
+): { info: Message; parts: Part[] }[] {
+  // Morph compact returns per-message results in result.messages (1:1 mapping).
+  // If lengths don't match, fall back to a single message with result.output.
+  if (result.messages.length !== originalMessages.length) {
+    const template = originalMessages[0]!;
+    return [
       {
-        id: `morph-compact-${Date.now()}`,
-        sessionID: templateMsg.info.sessionID,
-        messageID: templateMsg.info.id,
-        type: "text" as const,
-        text: `[Morph Compact: ${messageCount} messages compressed, ${Math.round(result.usage.compression_ratio * 100)}% kept]\n\n${result.output}`,
-      } as TextPart,
-    ],
-  };
+        info: { ...template.info, role: "user" as const } as Message,
+        parts: [
+          {
+            id: `morph-compact-${template.info.id}`,
+            sessionID: template.info.sessionID,
+            messageID: template.info.id,
+            type: "text" as const,
+            text: result.output,
+          } as TextPart,
+        ],
+      },
+    ];
+  }
+
+  return result.messages.map((compacted, i) => {
+    const original = originalMessages[i]!;
+    return {
+      info: {
+        ...original.info,
+        role: compacted.role as "user" | "assistant",
+      } as Message,
+      parts: [
+        {
+          id: `morph-compact-${original.info.id}`,
+          sessionID: original.info.sessionID,
+          messageID: original.info.id,
+          type: "text" as const,
+          text: compacted.content,
+        } as TextPart,
+      ],
+    };
+  });
 }
 
 export default MorphPlugin;
