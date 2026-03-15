@@ -638,7 +638,7 @@ async function fetchGitHubRepoSuggestions(
   });
 }
 
-const MorphPlugin: Plugin = async ({ directory, client }) => {
+const MorphPlugin: Plugin = async ({ directory, worktree, client }) => {
   const log = async (
     level: "debug" | "info" | "warn" | "error",
     message: string,
@@ -756,7 +756,7 @@ Options:
 
           const filepath = resolveSessionFilepath(
             target_filepath,
-            context.directory,
+            directory,
           );
 
           if (!MORPH_API_KEY) {
@@ -944,8 +944,8 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`;
             const generator = warpGrep!.execute({
               searchTerm: args.search_term,
               repoRoot: resolveSessionRepoRoot(
-                context.directory,
-                context.worktree,
+                directory,
+                worktree,
               ),
               streamSteps: true,
             });

@@ -969,10 +969,8 @@ describe("plugin runtime hooks", () => {
 });
 
 describe("ToolContext path resolution", () => {
-  test("morph_edit resolves relative paths from context.directory", async () => {
+  test("morph_edit resolves relative paths from plugin directory", async () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "morph-plugin-"));
-    const sessionDir = join(tempRoot, "nested");
-    mkdirSync(sessionDir, { recursive: true });
 
     try {
       const { default: MorphPlugin } = await importPluginWithEnv({
@@ -986,12 +984,11 @@ describe("ToolContext path resolution", () => {
           instructions: "I am creating a test file",
           code_edit: "export const created = true;\n",
         },
-        makeToolContext(sessionDir, tempRoot),
+        makeToolContext(tempRoot),
       );
 
       expect(result).toContain("Created new file: created.ts");
-      expect(existsSync(join(sessionDir, "created.ts"))).toBe(true);
-      expect(existsSync(join(tempRoot, "created.ts"))).toBe(false);
+      expect(existsSync(join(tempRoot, "created.ts"))).toBe(true);
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
