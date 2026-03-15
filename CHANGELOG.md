@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-03-15
+
+### Fixed
+
+- **npm package metadata** — repository, homepage, and bugs URLs now point to `morphllm/opencode-morph-plugin` (previously pointed to forked `JRedeker/opencode-morph-fast-apply`)
+- **npm README** — updated to include Public Repo Context tool and current installation instructions
+
+## [2.0.0] - 2026-03-09
+
+### Added
+
+- **Public Repo Context** (`warpgrep_github_search`) — grounded context search for public GitHub repos without cloning
+- **Resolver-style failures** — wrong repo locators now return `Did you mean ...` suggestions
+
+### Changed
+
+- Major version bump for new tool additions and API surface changes
+
 ## [1.8.1] - 2026-03-07
 
 ### Changed
