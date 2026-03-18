@@ -1,11 +1,11 @@
 {
-  "name": "@morphllm/morph-plugin",
+  "name": "@duange/morph-plugin",
   "version": "3.0.0",
   "description": "Claude Code plugin for Morph SDK — Fast Apply, WarpGrep codebase search, GitHub repo context",
   "type": "module",
   "main": "dist/src/cli/index.js",
   "bin": {
-    "morph": "./dist/src/cli/index.js"
+    "morph": "dist/src/cli/index.js"
   },
   "exports": {
     ".": "./dist/src/core/index.js"
@@ -45,7 +45,7 @@
   "author": "Morph",
   "repository": {
     "type": "git",
-    "url": "https://github.com/z23cc/morph-plugin.git"
+    "url": "git+https://github.com/z23cc/morph-plugin.git"
   },
   "bugs": {
     "url": "https://github.com/z23cc/morph-plugin/issues"
