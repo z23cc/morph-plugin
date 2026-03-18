@@ -5,6 +5,9 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "morph": "./dist/src/cli/index.js"
+  },
   "exports": {
     ".": "./dist/index.js"
   },
@@ -12,7 +15,8 @@
     "dist",
     "README.md",
     "LICENSE",
-    "instructions/"
+    "instructions/",
+    "hooks/"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

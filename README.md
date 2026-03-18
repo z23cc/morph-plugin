@@ -1,13 +1,13 @@
-# opencode-morph-plugin
+# morph-plugin
 
 Source repository: https://github.com/morphllm/opencode-morph-plugin
 
-[OpenCode](https://opencode.ai) plugin for [Morph](https://morphllm.com). Four tools:
+[Morph](https://morphllm.com) tools for AI coding assistants. Works with **Claude Code** (via CLI) and **[OpenCode](https://opencode.ai)** (via plugin). Four capabilities:
 
-- **Fast Apply** — 10,500+ tok/s code editing with lazy markers
-- **WarpGrep** — fast agentic codebase search, +4% on SWE-Bench Pro, -15% cost
-- **Public Repo Context** — grounded context search for public GitHub repos without cloning
-- **Compaction** — 25,000+ tok/s context compression in sub-2s, +0.6% on SWE-Bench Pro
+- **Fast Apply** -- 10,500+ tok/s code editing with lazy markers
+- **WarpGrep** -- fast agentic codebase search, +4% on SWE-Bench Pro, -15% cost
+- **Public Repo Context** -- grounded context search for public GitHub repos without cloning
+- **Compaction** -- 25,000+ tok/s context compression in sub-2s, +0.6% on SWE-Bench Pro
 
 ![WarpGrep SWE-bench Pro Benchmarks](assets/warpgrep-benchmarks.png)
 
@@ -25,9 +25,46 @@ Sign up at [morphllm.com/dashboard](https://morphllm.com/dashboard/api-keys) and
 export MORPH_API_KEY="sk-..."
 ```
 
-### 2. Install the plugin
+### 2a. Claude Code / CLI
 
-Recommended: install it as an npm package in your OpenCode config directory.
+Install the Morph CLI globally:
+
+```bash
+npm i -g @morphllm/cli
+```
+
+Or run commands on demand with `npx`:
+
+```bash
+npx morph edit --file src/app.ts
+npx morph search --query "auth flow"
+```
+
+**Add the routing instructions** so Claude Code picks the right tool automatically. Copy the instructions file into your project:
+
+```bash
+cp node_modules/@morphllm/opencode-morph-plugin/instructions/claude-code.md .claude/
+```
+
+Or reference it in your global `~/.claude/CLAUDE.md`:
+
+```markdown
+See instructions in: instructions/claude-code.md
+```
+
+**Optional: add the auto-route hook** to nudge Claude Code toward `morph edit` for large files. See [`hooks/claude-code-auto-route.md`](hooks/claude-code-auto-route.md) for the settings.json snippet.
+
+#### CLI command reference
+
+| Command | Description |
+|---|---|
+| `echo "code" \| morph edit --file <path>` | Fast apply: merge edited code into an existing file |
+| `morph search --query <text> [--dir <path>]` | WarpGrep: agentic codebase search |
+| `morph github --repo <owner/repo> --query <text>` | Public repo context search |
+
+### 2b. OpenCode (plugin)
+
+Install the plugin as an npm package in your OpenCode config directory:
 
 ```bash
 cd ~/.config/opencode
@@ -52,6 +89,8 @@ This follows OpenCode's recommended npm plugin flow: declare the plugin in `open
 
 If you prefer to manage instructions separately, copy the packaged routing policy from the installed npm package so the LLM picks the right tool:
 
+**OpenCode:**
+
 ```bash
 cp node_modules/@morphllm/opencode-morph-plugin/instructions/morph-tools.md ~/.config/opencode/instructions/
 ```
@@ -63,6 +102,14 @@ Then reference it in your `opencode.json`:
   "instructions": ["~/.config/opencode/instructions/morph-tools.md"]
 }
 ```
+
+**Claude Code:**
+
+```bash
+cp node_modules/@morphllm/opencode-morph-plugin/instructions/claude-code.md .claude/
+```
+
+The instructions file teaches the model when to use `morph edit` vs the native Edit tool, when to use `morph search` vs Grep, and how to handle fallbacks.
 
 ---
 

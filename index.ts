@@ -11,61 +11,61 @@ import { type Plugin, tool } from "@opencode-ai/plugin";
 import { MorphClient, WarpGrepClient, CompactClient } from "@morphllm/morphsdk";
 import type { WarpGrepResult, CompactResult } from "@morphllm/morphsdk";
 import type { Part, TextPart, ToolPart, Message } from "@opencode-ai/sdk";
-import { isAbsolute, resolve as resolvePath } from "node:path";
+
+// Core logic — platform-agnostic modules
+import {
+  // Constants
+  MORPH_API_URL,
+  MORPH_TIMEOUT,
+  MORPH_WARP_GREP_TIMEOUT,
+  MORPH_COMPACT_TIMEOUT,
+  CHARS_PER_TOKEN,
+  PLUGIN_VERSION,
+  EXISTING_CODE_MARKER,
+  MORPH_ROUTING_HINT_HEADER,
+  READONLY_AGENTS,
+  // Feature flags
+  isMorphEditEnabled,
+  isMorphWarpgrepEnabled,
+  isMorphWarpgrepGithubEnabled,
+  isMorphCompactEnabled,
+  isAllowReadonlyAgents,
+  getMorphApiKey,
+  getCompactContextThreshold,
+  getCompactPreserveRecent,
+  getCompactRatio,
+  // Path helpers
+  resolveSessionFilepath,
+  resolveSessionRepoRoot,
+  // Tool description helpers
+  appendRuntimeNotes,
+  buildToolRuntimeNotes,
+  buildMorphSystemRoutingHint,
+  // Edit logic
+  normalizeCodeEditInput,
+  detectMarkerLeakage,
+  detectTruncation,
+  // Search logic
+  formatWarpGrepResult,
+  // GitHub logic
+  resolvePublicRepoLocator,
+  lookupGitHubRepository,
+  fetchGitHubRepoSuggestions,
+  formatPublicRepoResolutionFailure,
+} from "./src/core/index.js";
 
 // Config from environment — only MORPH_API_KEY is required
-const MORPH_API_KEY = process.env.MORPH_API_KEY;
-const MORPH_API_URL = "https://api.morphllm.com";
-const MORPH_TIMEOUT = 30000;
-const MORPH_WARP_GREP_TIMEOUT = 60000;
-const MORPH_COMPACT_TIMEOUT = 60000;
-const GITHUB_RESOLVER_TIMEOUT = 10000;
-const GITHUB_REPO_API_URL = "https://api.github.com/repos";
-const GITHUB_REPO_SEARCH_URL = "https://api.github.com/search/repositories";
-const GITHUB_REPO_SUGGESTION_LIMIT = 5;
+const MORPH_API_KEY = getMorphApiKey();
+const MORPH_EDIT_ENABLED = isMorphEditEnabled();
+const MORPH_WARPGREP_ENABLED = isMorphWarpgrepEnabled();
+const MORPH_WARPGREP_GITHUB_ENABLED = isMorphWarpgrepGithubEnabled();
+const MORPH_COMPACT_ENABLED = isMorphCompactEnabled();
+const ALLOW_READONLY_AGENTS = isAllowReadonlyAgents();
 
-// Compaction config — threshold and ratio are user-tunable
-// Approximate: ~3 characters per token (rough estimate for threshold math)
-const CHARS_PER_TOKEN = 3;
-
-// Compact when effective context reaches this fraction of model's max context window
-const COMPACT_CONTEXT_THRESHOLD = parseFloat(
-  process.env.MORPH_COMPACT_CONTEXT_THRESHOLD || "0.7",
-);
-
-// Number of recent messages to keep uncompacted (full fidelity for the LLM)
-const COMPACT_PRESERVE_RECENT = parseInt(
-  process.env.MORPH_COMPACT_PRESERVE_RECENT || "6",
-  10,
-);
-const COMPACT_RATIO = parseFloat(
-  process.env.MORPH_COMPACT_RATIO || "0.3",
-);
-
-/**
- * Feature flags — users can disable specific capabilities.
- * All default to true (enabled). Set to "false" to disable.
- */
-const MORPH_EDIT_ENABLED = process.env.MORPH_EDIT !== "false";
-const MORPH_WARPGREP_ENABLED = process.env.MORPH_WARPGREP !== "false";
-const MORPH_WARPGREP_GITHUB_ENABLED =
-  process.env.MORPH_WARPGREP_GITHUB !== "false";
-const MORPH_COMPACT_ENABLED = process.env.MORPH_COMPACT !== "false";
-
-/**
- * Agents that are blocked from using morph_edit by default.
- * Users can override by setting MORPH_ALLOW_READONLY_AGENTS=true
- */
-const READONLY_AGENTS = ["plan", "explore"];
-const ALLOW_READONLY_AGENTS =
-  process.env.MORPH_ALLOW_READONLY_AGENTS === "true";
-
-/** Plugin version */
-const PLUGIN_VERSION = "2.0.0";
-
-/** Canonical marker string used for lazy edit placeholders */
-const EXISTING_CODE_MARKER = "// ... existing code ...";
-const MORPH_ROUTING_HINT_HEADER = "Morph plugin routing hints:";
+// Compaction config
+const COMPACT_CONTEXT_THRESHOLD = getCompactContextThreshold();
+const COMPACT_PRESERVE_RECENT = getCompactPreserveRecent();
+const COMPACT_RATIO = getCompactRatio();
 
 /**
  * Shared MorphClient — FastApply uses morph.fastApply.applyEdit()
@@ -119,29 +119,6 @@ let compactionState: {
   compactedUpToIndex: number;
   frozenChars: number;
 } | null = null;
-
-/**
- * Normalize code_edit input from LLM tool calls.
- *
- * Agents frequently wrap tool arguments in markdown fences (```lang ... ```).
- * When this is nested inside Morph's <update> XML tag, it confuses the merge
- * model. This function strips a single outer fence pair using line-based parsing.
- */
-function normalizeCodeEditInput(codeEdit: string): string {
-  const trimmed = codeEdit.trim();
-  const lines = trimmed.split("\n");
-
-  if (lines.length < 3) return codeEdit;
-
-  const firstLine = lines[0];
-  const lastLine = lines[lines.length - 1];
-
-  if (/^```[\w-]*$/.test(firstLine) && /^```$/.test(lastLine)) {
-    return lines.slice(1, -1).join("\n");
-  }
-
-  return codeEdit;
-}
 
 /**
  * Serialize a Part into a text representation for compaction input.
@@ -206,436 +183,6 @@ function estimateTotalChars(
     }
   }
   return total;
-}
-
-
-function resolveSessionFilepath(
-  targetFilepath: string,
-  sessionDirectory: string,
-): string {
-  return isAbsolute(targetFilepath)
-    ? targetFilepath
-    : resolvePath(sessionDirectory, targetFilepath);
-}
-
-function resolveSessionRepoRoot(
-  sessionDirectory: string,
-  sessionWorktree: string,
-): string {
-  return sessionWorktree || sessionDirectory;
-}
-
-function appendRuntimeNotes(description: string, notes: string[]): string {
-  if (notes.length === 0) return description;
-
-  return `${description}\n\nRuntime notes:\n${notes.map((note) => `- ${note}`).join("\n")}`;
-}
-
-function buildToolRuntimeNotes(toolID: string): string[] {
-  switch (toolID) {
-    case "morph_edit": {
-      const notes = [
-        "Relative paths resolve from the active session directory.",
-      ];
-
-      if (!ALLOW_READONLY_AGENTS) {
-        notes.push(
-          `Blocked in readonly agents: ${READONLY_AGENTS.join(", ")}.`,
-        );
-      }
-
-      if (!MORPH_API_KEY) {
-        notes.push("Currently unavailable until MORPH_API_KEY is configured.");
-      }
-
-      return notes;
-    }
-
-    case "warpgrep_codebase_search": {
-      const notes = [
-        "Searches the current project worktree, not just the immediate cwd.",
-      ];
-
-      if (!MORPH_API_KEY) {
-        notes.push("Currently unavailable until MORPH_API_KEY is configured.");
-      }
-
-      return notes;
-    }
-
-    case "warpgrep_github_search": {
-      const notes = [
-        "Use this for public GitHub source questions, not the current checked-out repo.",
-      ];
-
-      if (!MORPH_API_KEY) {
-        notes.push("Currently unavailable until MORPH_API_KEY is configured.");
-      }
-
-      return notes;
-    }
-
-    default:
-      return [];
-  }
-}
-
-function buildMorphSystemRoutingHint(): string | null {
-  if (!MORPH_API_KEY) {
-    return [
-      MORPH_ROUTING_HINT_HEADER,
-      "- Morph remote tools are currently unavailable because MORPH_API_KEY is not configured.",
-      "- Use native edit/write/grep tools until Morph credentials are configured.",
-    ].join("\n");
-  }
-
-  const lines = [MORPH_ROUTING_HINT_HEADER];
-
-  if (MORPH_EDIT_ENABLED) {
-    lines.push(
-      "- Prefer morph_edit for large or scattered edits inside existing files.",
-    );
-    lines.push("- Use native edit for small exact replacements.");
-    lines.push("- Use write for brand new files.");
-
-    if (!ALLOW_READONLY_AGENTS) {
-      lines.push(
-        `- morph_edit is blocked in readonly agents: ${READONLY_AGENTS.join(", ")}.`,
-      );
-    }
-  }
-
-  if (MORPH_WARPGREP_ENABLED) {
-    lines.push(
-      "- Use warpgrep_codebase_search for exploratory local codebase questions.",
-    );
-  }
-
-  if (MORPH_WARPGREP_GITHUB_ENABLED) {
-    lines.push(
-      "- Use warpgrep_github_search for public GitHub source questions.",
-    );
-  }
-
-  return lines.length > 1 ? lines.join("\n") : null;
-}
-
-/**
- * Format WarpGrep results for tool output
- */
-function formatWarpGrepResult(result: WarpGrepResult): string {
-  if (!result.success) {
-    return `Search failed: ${result.error}`;
-  }
-
-  if (!result.contexts || result.contexts.length === 0) {
-    return "No relevant code found. Try rephrasing your search term.";
-  }
-
-  const parts: string[] = [];
-  parts.push("Relevant context found:");
-
-  for (const ctx of result.contexts) {
-    const rangeStr =
-      !ctx.lines || ctx.lines === "*"
-        ? "*"
-        : ctx.lines.map(([s, e]) => `${s}-${e}`).join(",");
-    parts.push(`- ${ctx.file}:${rangeStr}`);
-  }
-
-  parts.push("\nFile contents:\n");
-
-  for (const ctx of result.contexts) {
-    const rangeStr =
-      !ctx.lines || ctx.lines === "*"
-        ? ""
-        : ` lines="${ctx.lines.map(([s, e]) => `${s}-${e}`).join(",")}"`;
-    parts.push(`<file path="${ctx.file}"${rangeStr}>`);
-    parts.push(ctx.content);
-    parts.push("</file>\n");
-  }
-
-  return parts.join("\n");
-}
-
-type PublicRepoContextSearchArgs = {
-  search_term: string;
-  owner_repo?: string;
-  github_url?: string;
-  branch?: string;
-};
-
-type GitHubRepo = string; // "owner/repo"
-
-type GitHubRepoSuggestion = {
-  fullName: string;
-  htmlUrl: string;
-  description?: string;
-  stars: number;
-  ownerLogin: string;
-  name: string;
-};
-
-type GitHubRepoLookupResult =
-  | {
-      status: "found";
-      fullName: string;
-      defaultBranch?: string;
-      htmlUrl?: string;
-    }
-  | {
-      status: "not_found";
-      detail: string;
-    }
-  | {
-      status: "unavailable";
-      detail: string;
-    };
-
-const GITHUB_OWNER_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-
-function tokenizeSuggestionQuery(text: string): string[] {
-  return text
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((token) => token.length >= 2);
-}
-
-function buildGitHubSuggestionQueries(
-  repo: GitHubRepo,
-  searchTerm: string,
-): string[] {
-  const [owner, repoName] = repo.split("/");
-  const searchTokens = tokenizeSuggestionQuery(searchTerm).slice(0, 3);
-  const queries = new Set<string>();
-
-  if (owner) queries.add(`user:${owner}`);
-  if (owner && repoName) queries.add(`${repoName} user:${owner}`);
-  if (repoName) queries.add(repoName);
-  if (searchTokens.length > 0 && repoName) {
-    queries.add(`${repoName} ${searchTokens.join(" ")}`);
-  }
-
-  return Array.from(queries).slice(0, 4);
-}
-
-function formatPublicRepoResolutionFailure(
-  repo: GitHubRepo,
-  detail?: string,
-  suggestions: GitHubRepoSuggestion[] = [],
-): string {
-  const parts: string[] = [
-    `Repository not found: ${repo}\n\nThis repository does not exist or is private. Do NOT keep guessing other repo names.`,
-  ];
-  if (suggestions.length > 0) {
-    const list = suggestions.map((s) => `- ${s.fullName}${s.description ? ` - ${s.description}` : ""}`).join("\n");
-    parts.push(`Public repos found under this org:\n${list}\n\nIf one of these looks right, retry with that owner_repo.`);
-  }
-  parts.push(`If the package or SDK is closed-source or private:\n- Check the ecosystem registry or package page for repository metadata before guessing more names\n- Use the registry that matches the environment: npm for Node/TypeScript, crates.io for Rust, PyPI for Python, pkg.go.dev for Go, etc.\n- The real source repo may be under a different org or name\n- Stop trying variations and report that the source is not publicly available`);
-  return parts.join("\n\n");
-}
-
-function resolvePublicRepoLocator(
-  args: PublicRepoContextSearchArgs,
-): { repo: GitHubRepo } | { error: string } {
-  const ownerRepo = args.owner_repo?.trim();
-  const githubUrl = args.github_url?.trim();
-
-  if (ownerRepo && githubUrl) {
-    return {
-      error: `Error: Provide either owner_repo or github_url, not both.
-
-Use owner_repo for values like "owner/repo" or github_url for full URLs like "https://github.com/owner/repo".`,
-    };
-  }
-
-  if (!ownerRepo && !githubUrl) {
-    return {
-      error: `Error: Missing repository target.
-
-Provide exactly one of:
-- owner_repo: "owner/repo"
-- github_url: "https://github.com/owner/repo"`,
-    };
-  }
-
-  if (ownerRepo) {
-    if (!GITHUB_OWNER_REPO_PATTERN.test(ownerRepo)) {
-      return {
-        error: `Error: owner_repo must be a GitHub repository in "owner/repo" format.
-
-Received: "${ownerRepo}"
-
-Examples:
-- "owner/repo"
-- "org/project"
-- "team/package"
-
-If you have a full URL, use github_url instead.`,
-      };
-    }
-
-    return { repo: ownerRepo };
-  }
-
-  let parsed: URL;
-  try {
-    parsed = new URL(githubUrl!);
-  } catch {
-    return {
-      error: `Error: github_url must be a valid GitHub repository URL.
-
-Received: "${githubUrl}"
-
-Example:
-- "https://github.com/owner/repo"`,
-    };
-  }
-
-  if (!["github.com", "www.github.com"].includes(parsed.hostname)) {
-    return {
-      error: `Error: github_url must point to github.com.
-
-Received host: "${parsed.hostname}"
-
-Example:
-- "https://github.com/owner/repo"`,
-    };
-  }
-
-  const pathParts = parsed.pathname
-    .split("/")
-    .map((part) => part.trim())
-    .filter(Boolean);
-
-  if (pathParts.length < 2) {
-    return {
-      error: `Error: github_url must include both owner and repository name.
-
-Received: "${githubUrl}"
-
-Example:
-- "https://github.com/owner/repo"`,
-    };
-  }
-
-  const owner = pathParts[0]!;
-  const repoName = pathParts[1]!.replace(/\.git$/, "");
-  const canonicalRepo = `${owner}/${repoName}`;
-
-  if (!GITHUB_OWNER_REPO_PATTERN.test(canonicalRepo)) {
-    return {
-      error: `Error: github_url did not resolve to a valid GitHub owner/repo locator.
-
-Received: "${githubUrl}"`,
-    };
-  }
-
-  return { repo: canonicalRepo };
-}
-
-function githubHeaders(): Record<string, string> {
-  return {
-    Accept: "application/vnd.github+json",
-    "User-Agent": "@morphllm/opencode-morph-plugin",
-  };
-}
-
-async function withGitHubTimeout<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), GITHUB_RESOLVER_TIMEOUT);
-  try {
-    return await fn(ctrl.signal);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function lookupGitHubRepository(
-  repo: GitHubRepo,
-): Promise<GitHubRepoLookupResult> {
-  return withGitHubTimeout(async (signal) => {
-    try {
-      const response = await fetch(`${GITHUB_REPO_API_URL}/${repo}`, {
-        headers: githubHeaders(),
-        signal,
-      });
-
-      if (response.status === 404) return { status: "not_found", detail: "GitHub repository not found" };
-      if (!response.ok) return { status: "unavailable", detail: `GitHub repo lookup failed with status ${response.status}` };
-
-      const body = (await response.json()) as {
-        full_name?: string;
-        default_branch?: string;
-        html_url?: string;
-      };
-
-      return {
-        status: "found",
-        fullName: body.full_name || repo,
-        defaultBranch: body.default_branch,
-        htmlUrl: body.html_url,
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown GitHub repo lookup error";
-      return { status: "unavailable", detail: message };
-    }
-  });
-}
-
-async function fetchGitHubRepoSuggestions(
-  repo: GitHubRepo,
-  searchTerm: string,
-): Promise<GitHubRepoSuggestion[]> {
-  return withGitHubTimeout(async (signal) => {
-    const queries = buildGitHubSuggestionQueries(repo, searchTerm);
-
-    const results = await Promise.all(
-      queries.map(async (query) => {
-        const url = new URL(GITHUB_REPO_SEARCH_URL);
-        url.searchParams.set("q", query);
-        url.searchParams.set("sort", "stars");
-        url.searchParams.set("order", "desc");
-        url.searchParams.set("per_page", String(GITHUB_REPO_SUGGESTION_LIMIT));
-
-        const response = await fetch(url.toString(), { headers: githubHeaders(), signal });
-        if (!response.ok) return [];
-
-        const body = (await response.json()) as {
-          items?: Array<{
-            full_name?: string;
-            html_url?: string;
-            description?: string | null;
-            stargazers_count?: number;
-            name?: string;
-            owner?: { login?: string };
-          }>;
-        };
-
-        return (body.items || []).filter(
-          (item) => item.full_name && item.html_url && item.name && item.owner?.login,
-        );
-      }),
-    );
-
-    const candidates = new Map<string, GitHubRepoSuggestion>();
-    for (const items of results) {
-      for (const item of items) {
-        if (!candidates.has(item.full_name!)) {
-          candidates.set(item.full_name!, {
-            fullName: item.full_name!,
-            htmlUrl: item.html_url!,
-            description: item.description || undefined,
-            stars: item.stargazers_count || 0,
-            ownerLogin: item.owner!.login!,
-            name: item.name!,
-          });
-        }
-      }
-    }
-
-    return Array.from(candidates.values()).slice(0, GITHUB_REPO_SUGGESTION_LIMIT);
-  });
 }
 
 const MorphPlugin: Plugin = async ({ directory, worktree, client }) => {
@@ -839,12 +386,7 @@ The edit tool requires matching the exact text in the file.`;
           const mergedCode = result.mergedCode;
 
           // Guard 3: Marker leakage detection
-          const originalHadMarker = originalCode.includes(EXISTING_CODE_MARKER);
-          if (
-            hasMarkers &&
-            !originalHadMarker &&
-            mergedCode.includes(EXISTING_CODE_MARKER)
-          ) {
+          if (detectMarkerLeakage(originalCode, mergedCode, hasMarkers)) {
             await log(
               "warn",
               `Marker leakage detected in merged output for ${target_filepath}`,
@@ -863,22 +405,19 @@ Options:
           }
 
           // Guard 4: Catastrophic truncation detection
-          const mergedLineCount = mergedCode.split("\n").length;
-          const charLoss =
-            (originalCode.length - mergedCode.length) / originalCode.length;
-          const lineLoss =
-            (originalLineCount - mergedLineCount) / originalLineCount;
+          const truncation = detectTruncation(originalCode, mergedCode, hasMarkers);
 
-          if (hasMarkers && charLoss > 0.6 && lineLoss > 0.5) {
+          if (truncation.triggered) {
+            const mergedLineCount = mergedCode.split("\n").length;
             await log(
               "warn",
-              `Catastrophic truncation detected for ${target_filepath}: ${Math.round(charLoss * 100)}% char loss, ${Math.round(lineLoss * 100)}% line loss`,
+              `Catastrophic truncation detected for ${target_filepath}: ${Math.round(truncation.charLoss * 100)}% char loss, ${Math.round(truncation.lineLoss * 100)}% line loss`,
             );
             return `Morph API produced a potentially destructive merge for ${target_filepath}.
 
 Original: ${originalLineCount} lines (${originalCode.length} chars)
 Merged:   ${mergedLineCount} lines (${mergedCode.length} chars)
-Loss:     ${Math.round(charLoss * 100)}% characters, ${Math.round(lineLoss * 100)}% lines
+Loss:     ${Math.round(truncation.charLoss * 100)}% characters, ${Math.round(truncation.lineLoss * 100)}% lines
 
 Because markers were provided, this large shrink is likely unintended.
 No file changes were written.
@@ -1095,13 +634,19 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`;
   };
 
   hooks["tool.definition"] = async (input: any, output: any) => {
-    const notes = buildToolRuntimeNotes(input.toolID);
+    const notes = buildToolRuntimeNotes(input.toolID, MORPH_API_KEY, ALLOW_READONLY_AGENTS);
     if (notes.length === 0) return;
 
     output.description = appendRuntimeNotes(output.description, notes);
   };
 
-  const systemRoutingHint = buildMorphSystemRoutingHint();
+  const systemRoutingHint = buildMorphSystemRoutingHint(
+    MORPH_API_KEY,
+    MORPH_EDIT_ENABLED,
+    MORPH_WARPGREP_ENABLED,
+    MORPH_WARPGREP_GITHUB_ENABLED,
+    ALLOW_READONLY_AGENTS,
+  );
   if (systemRoutingHint) {
     hooks["experimental.chat.system.transform"] = async (
       _input: any,
