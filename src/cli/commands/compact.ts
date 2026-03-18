@@ -1,5 +1,5 @@
 /**
- * morph compact
+ * morph compact [--ratio <0.05-1.0>] [--preserve-recent <n>]
  *
  * Compresses text/conversation context via Morph Compact API.
  * Reads input from stdin, returns compressed output to stdout.
@@ -34,22 +34,47 @@ export async function runCompact(args: string[]): Promise<void> {
       process.exit(1);
     }
     const parsed = parseFloat(args[ratioIndex + 1]!);
-    if (!Number.isFinite(parsed) || parsed <= 0 || parsed >= 1) {
+    if (!Number.isFinite(parsed) || parsed < 0.05 || parsed > 1.0) {
       console.error("Error: --ratio must be between 0.05 and 1.0");
       process.exit(1);
     }
     ratio = parsed;
   }
 
+  // Parse --preserve-recent (optional, default 0)
+  const preserveRecentIndex = args.indexOf("--preserve-recent");
+  let preserveRecent = 0;
+  if (preserveRecentIndex !== -1) {
+    if (preserveRecentIndex + 1 >= args.length) {
+      console.error("Error: --preserve-recent requires an integer value");
+      process.exit(1);
+    }
+    const parsed = parseInt(args[preserveRecentIndex + 1]!, 10);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      console.error("Error: --preserve-recent must be a non-negative integer");
+      process.exit(1);
+    }
+    preserveRecent = parsed;
+  }
+
   // Check if stdin is a TTY (no piped input)
   if (process.stdin.isTTY) {
     console.error("Error: text content must be piped via stdin");
-    console.error('Usage: cat conversation.txt | morph compact');
+    console.error("Usage: cat conversation.txt | morph compact");
     console.error('       echo "long text..." | morph compact --ratio 0.2');
     process.exit(1);
   }
 
-  const input = await readStdin();
+  let input: string;
+  try {
+    input = await readStdin();
+  } catch (err) {
+    const error = err as Error;
+    console.error(`Error: ${error.message}`);
+    process.exit(1);
+    return; // unreachable, satisfies TS
+  }
+
   if (!input.trim()) {
     console.error("Error: stdin is empty -- no content to compact");
     process.exit(1);
@@ -64,23 +89,22 @@ export async function runCompact(args: string[]): Promise<void> {
   const startTime = Date.now();
 
   try {
-    const messages = [{ role: "user", content: input }];
     const result = await compactClient.compact({
-      messages,
+      input,
       compressionRatio: ratio,
-      preserveRecent: 0,
+      preserveRecent,
     });
 
     const duration = Date.now() - startTime;
     const inputChars = input.length;
-    const outputChars = result.messages?.map((m: { content: string }) => m.content).join("\n").length ?? 0;
+    const output = result.output || "";
+    const outputChars = output.length;
     const compressionPercent = inputChars > 0 ? Math.round((1 - outputChars / inputChars) * 100) : 0;
 
-    // Output compacted text to stdout
-    if (result.messages && result.messages.length > 0) {
-      for (const msg of result.messages) {
-        console.log(msg.content);
-      }
+    // Output compacted text to stdout (precise, no extra newlines)
+    process.stdout.write(output);
+    if (output.length > 0 && !output.endsWith("\n")) {
+      process.stdout.write("\n");
     }
 
     // Stats to stderr
