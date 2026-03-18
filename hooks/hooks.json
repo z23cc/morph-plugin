@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "morph --version 2>/dev/null || echo '[morph] CLI not found. Install: npm i -g @morphllm/opencode-morph-plugin'",
+        "description": "Verify morph CLI is available"
+      }
+    ]
+  }
+}

@@ -1,22 +1,23 @@
 {
-  "name": "@morphllm/opencode-morph-plugin",
-  "version": "2.0.5",
-  "description": "OpenCode plugin for Morph SDK - fast apply, WarpGrep codebase search",
+  "name": "@morphllm/morph-plugin",
+  "version": "3.0.0",
+  "description": "Claude Code plugin for Morph SDK — Fast Apply, WarpGrep codebase search, GitHub repo context",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/src/cli/index.js",
   "bin": {
     "morph": "./dist/src/cli/index.js"
   },
   "exports": {
-    ".": "./dist/index.js"
+    ".": "./dist/src/core/index.js"
   },
   "files": [
     "dist",
+    ".claude-plugin",
+    "skills",
+    "hooks",
+    "instructions",
     "README.md",
-    "LICENSE",
-    "instructions/",
-    "hooks/"
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -25,31 +26,30 @@
     "ci": "bun test && bun run build && bun run typecheck"
   },
   "dependencies": {
-    "@morphllm/morphsdk": "^0.2.134",
-    "@opencode-ai/plugin": "latest",
-    "@opencode-ai/sdk": "^1.2.22"
+    "@morphllm/morphsdk": "^0.2.134"
   },
   "devDependencies": {
     "bun-types": "latest",
     "typescript": "^5.0.0"
   },
   "keywords": [
-    "opencode",
+    "claude-code",
     "plugin",
     "morph",
     "fast-apply",
     "warpgrep",
     "code-search",
-    "code-editing"
+    "code-editing",
+    "cli"
   ],
   "author": "Morph",
   "repository": {
     "type": "git",
-    "url": "https://github.com/morphllm/opencode-morph-plugin.git"
+    "url": "https://github.com/z23cc/morph-plugin.git"
   },
   "bugs": {
-    "url": "https://github.com/morphllm/opencode-morph-plugin/issues"
+    "url": "https://github.com/z23cc/morph-plugin/issues"
   },
-  "homepage": "https://github.com/morphllm/opencode-morph-plugin#readme",
+  "homepage": "https://github.com/z23cc/morph-plugin#readme",
   "license": "MIT"
 }

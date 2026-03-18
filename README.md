@@ -1,17 +1,12 @@
 # morph-plugin
 
-Source repository: https://github.com/morphllm/opencode-morph-plugin
+Claude Code plugin + CLI for [Morph](https://morphllm.com). Three tools:
 
-[Morph](https://morphllm.com) tools for AI coding assistants. Works with **Claude Code** (via CLI) and **[OpenCode](https://opencode.ai)** (via plugin). Four capabilities:
-
-- **Fast Apply** -- 10,500+ tok/s code editing with lazy markers
-- **WarpGrep** -- fast agentic codebase search, +4% on SWE-Bench Pro, -15% cost
-- **Public Repo Context** -- grounded context search for public GitHub repos without cloning
-- **Compaction** -- 25,000+ tok/s context compression in sub-2s, +0.6% on SWE-Bench Pro
+- **Fast Apply** — 10,500+ tok/s code editing with lazy markers
+- **WarpGrep** — fast agentic codebase search, +4% on SWE-Bench Pro, -15% cost
+- **Public Repo Context** — grounded context search for public GitHub repos without cloning
 
 ![WarpGrep SWE-bench Pro Benchmarks](assets/warpgrep-benchmarks.png)
-
-On production repos and SWE-Bench Pro, enabling WarpGrep and compaction improves task accuracy by **6%**, reduces cost, and is net **28% faster**.
 
 ---
 
@@ -25,223 +20,94 @@ Sign up at [morphllm.com/dashboard](https://morphllm.com/dashboard/api-keys) and
 export MORPH_API_KEY="sk-..."
 ```
 
-### 2a. Claude Code / CLI
-
-Install the Morph CLI globally:
+### 2. Install the CLI
 
 ```bash
-npm i -g @morphllm/cli
+npm i -g @morphllm/morph-plugin
 ```
 
-Or run commands on demand with `npx`:
+### 3. Configure Claude Code
+
+Add the tool routing instructions so Claude Code knows when to use morph:
 
 ```bash
-npx morph edit --file src/app.ts
-npx morph search --query "auth flow"
+# Copy to your project
+cp node_modules/@morphllm/morph-plugin/instructions/claude-code.md .claude/instructions/
+
+# Or add to global CLAUDE.md
+cat node_modules/@morphllm/morph-plugin/instructions/claude-code.md >> ~/.claude/CLAUDE.md
 ```
 
-**Add the routing instructions** so Claude Code picks the right tool automatically. Copy the instructions file into your project:
-
-```bash
-cp node_modules/@morphllm/opencode-morph-plugin/instructions/claude-code.md .claude/
-```
-
-Or reference it in your global `~/.claude/CLAUDE.md`:
-
-```markdown
-See instructions in: instructions/claude-code.md
-```
-
-**Optional: add the auto-route hook** to nudge Claude Code toward `morph edit` for large files. See [`hooks/claude-code-auto-route.md`](hooks/claude-code-auto-route.md) for the settings.json snippet.
-
-#### CLI command reference
-
-| Command | Description |
-|---|---|
-| `echo "code" \| morph edit --file <path>` | Fast apply: merge edited code into an existing file |
-| `morph search --query <text> [--dir <path>]` | WarpGrep: agentic codebase search |
-| `morph github --repo <owner/repo> --query <text>` | Public repo context search |
-
-### 2b. OpenCode (plugin)
-
-Install the plugin as an npm package in your OpenCode config directory:
-
-```bash
-cd ~/.config/opencode
-npm i @morphllm/opencode-morph-plugin
-```
-
-Then register it in `~/.config/opencode/opencode.json`:
+Set the API key in Claude Code settings (`~/.claude/settings.json`):
 
 ```json
 {
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@morphllm/opencode-morph-plugin"],
-  "instructions": [
-    "node_modules/@morphllm/opencode-morph-plugin/instructions/morph-tools.md"
-  ]
+  "env": {
+    "MORPH_API_KEY": "sk-..."
+  }
 }
-```
-
-This follows OpenCode's recommended npm plugin flow: declare the plugin in `opencode.json`, and let OpenCode load it from your installed dependencies.
-
-### 3. Add tool routing instructions (recommended)
-
-If you prefer to manage instructions separately, copy the packaged routing policy from the installed npm package so the LLM picks the right tool:
-
-**OpenCode:**
-
-```bash
-cp node_modules/@morphllm/opencode-morph-plugin/instructions/morph-tools.md ~/.config/opencode/instructions/
-```
-
-Then reference it in your `opencode.json`:
-
-```json
-{
-  "instructions": ["~/.config/opencode/instructions/morph-tools.md"]
-}
-```
-
-**Claude Code:**
-
-```bash
-cp node_modules/@morphllm/opencode-morph-plugin/instructions/claude-code.md .claude/
-```
-
-The instructions file teaches the model when to use `morph edit` vs the native Edit tool, when to use `morph search` vs Grep, and how to handle fallbacks.
-
----
-
-## Fast Apply (`morph_edit`)
-
-10,500+ tok/s code merging. The LLM writes partial snippets with lazy markers, Morph merges them into the full file.
-
-```
-  LLM generates partial edit         Morph merges into full file
-  with lazy markers                  at 10,500+ tok/s
-
-  // ... existing code ...           function validateToken(token) {
-  function validateToken(token) {      const decoded = jwt.verify(token);
-    if (!token) {             ──>      if (!token) {
-      throw new Error("...");            throw new Error("...");
-    }                                  }
-    // ... existing code ...           return decoded;
-  }                                  }
-  // ... existing code ...           export default validateToken;
-
-  ┌───────────┐    ┌───────────┐    ┌──────────┐    ┌──────────┐
-  │ code_edit │───>│ Morph API │───>│ safety   │───>│ write to │
-  │ + file    │    │ merge     │    │ guards   │    │ disk     │
-  └───────────┘    └───────────┘    └──────────┘    └──────────┘
-                                    marker leak?
-                                    truncation?
-```
-
-Safety guards block writes when: no markers on files >10 lines, markers leak into merged output, or merged output loses >60% chars / >50% lines.
-
-## WarpGrep (`warpgrep_codebase_search`)
-
-Fast agentic codebase search. +4% accuracy on SWE-Bench Pro, -15% cost, sub-6s per query.
-
-```
-  Query                               Fast agentic search
-
-  "How does auth                     Turn 1: ripgrep "auth" "token" "jwt"
-   middleware work?"                 Turn 2: read src/middleware/auth.ts
-           │                         Turn 3: ripgrep "verifyToken"
-           v                         Turn 4: read src/utils/jwt.ts
-  ┌──────────────┐                            │
-  │ WarpGrep     │    ┌─────────┐             v
-  │ Agent        │───>│ ripgrep │    ┌──────────────────┐
-  │ (multi-turn) │    │ read    │    │ 5 file contexts  │
-  │              │───>│ ls      │───>│ with line ranges │
-  └──────────────┘    └─────────┘    └──────────────────┘
-    4 turns, sub-6s                   src/middleware/auth.ts:15-42
-                                      src/utils/jwt.ts:1-28
-                                      ...
-```
-
-Use for exploratory queries ("how does X work?", "where is Y handled?"). For exact keyword lookup, use `grep` directly.
-
-## Public Repo Context (`warpgrep_github_search`)
-
-Grounded context search for public GitHub repositories. This is the remote-repo sibling of `warpgrep_codebase_search`.
-
-Use it when the code you want to understand is not checked out locally:
-
-```text
-owner_repo: owner/repo
-search_term: Where is request authentication handled?
-```
-
-```text
-github_url: https://github.com/owner/repo
-search_term: How is retry logic implemented?
-```
-
-The tool returns relevant file contexts from Morph's indexed public repo search without cloning the repository into your workspace.
-
-If the repo locator is wrong, the tool now returns a resolver-style failure with `Did you mean ...` suggestions and a concrete retry target. This helps the agent recover when it knows the product or package name but not the canonical GitHub repo.
-
-## State-of-the-Art Compaction
-
-25,000+ tok/s context compression in under 2 seconds. +0.6% on SWE-Bench Pro, where summarization-based compaction methods all hurt performance. Fires at 100k chars (roughly ~25k tokens, depending on content), before OpenCode's built-in auto-compact (95% context window). Results cached per message set.
-
-```
-  Every LLM call                      Only fires when context is large
-
-  ┌───────────────────────────────────────────────────┐
-  │              Message History (20 msgs)            │
-  │  msg1  msg2  msg3  ...  msg14 │ msg15 ... msg20   │
-  │  ──────── older ─────────────   ── recent (6) ──  │
-  └───────────────────────────────────────────────────┘
-                    │                       │
-        total > 100k chars?                 │
-                    │                       │
-                    v                       │
-          ┌─────────────────┐               │
-          │ Morph Compact   │               │
-          │ API (~2s)       │               │
-          │ 30% kept        │               │
-          └────────┬────────┘               │
-                   │                        │
-                   v                        v
-  ┌───────────────────────────────────────────────────┐
-  │  [compacted summary]   │ msg15  msg16 ... msg20   │
-  │  ────── 1 msg ───────    ──── recent (6) ──────   │
-  └───────────────────────────────────────────────────┘
-              7 messages sent to LLM
-              (cached for subsequent calls)
 ```
 
 ---
 
-## Tool selection guide
+## CLI Commands
+
+### morph edit --file \<path\>
+
+10,500+ tok/s code merging. Pipe partial code snippets via stdin with `// ... existing code ...` markers.
+
+```bash
+echo '// ... existing code ...
+function hello() {
+  return "hello world";
+}
+// ... existing code ...' | morph edit --file src/app.ts
+```
+
+Safety guards block writes when markers leak into merged output or when the merge loses too much of the original file.
+
+### morph search --query \<text\> [--dir \<path\>]
+
+Fast agentic codebase search via WarpGrep. Sub-6s per query.
+
+```bash
+morph search --query "how does auth middleware work"
+morph search --query "database config" --dir ./backend
+```
+
+### morph github --repo \<owner/repo\> --query \<text\>
+
+Grounded context search for public GitHub repos without cloning.
+
+```bash
+morph github --repo "vercel/next.js" --query "middleware matching"
+morph github --url "https://github.com/axios/axios" --query "retry logic"
+```
+
+---
+
+## Tool Selection Guide
 
 | Task | Tool | Why |
 |------|------|-----|
-| Large file (300+ lines) | `morph_edit` | Partial snippets, no exact matching |
-| Multiple scattered changes | `morph_edit` | Batch edits efficiently |
-| Small exact replacement | `edit` | Faster, no API call |
-| New file creation | `write` | morph_edit only edits existing files |
-| Codebase search/exploration | `warpgrep_codebase_search` | Fast agentic search |
-| Public GitHub repo understanding | `warpgrep_github_search` | Grounded context from indexed public repos |
-| Exact keyword lookup | `grep` | Direct ripgrep, no API call |
+| Large file (300+ lines) | `morph edit` | Partial snippets, no exact matching |
+| Multiple scattered changes | `morph edit` | Batch edits efficiently |
+| Small exact replacement | `Edit` | Faster, no API call |
+| New file creation | `Write` | morph edit only edits existing files |
+| Codebase search / exploration | `morph search` | Fast agentic search |
+| Public GitHub repo understanding | `morph github` | Grounded context without cloning |
+| Exact keyword lookup | `Grep` | Direct ripgrep, no API call |
 
 ---
 
-## Configuration
+## Exit Codes
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MORPH_API_KEY` | required | Your Morph API key |
-| `MORPH_EDIT` | `true` | Set `false` to disable Fast Apply |
-| `MORPH_WARPGREP` | `true` | Set `false` to disable WarpGrep |
-| `MORPH_WARPGREP_GITHUB` | `true` | Set `false` to disable public repo context search |
-| `MORPH_COMPACT` | `true` | Set `false` to disable compaction |
-| `MORPH_COMPACT_CHAR_THRESHOLD` | `100000` | Char count before compaction triggers |
-| `MORPH_COMPACT_RATIO` | `0.3` | Compression ratio (0.05-1.0, lower = more aggressive) |
+| Code | Meaning | Action |
+|------|---------|--------|
+| 0 | Success | Continue |
+| 1 | Input or config error | Fix input, retry |
+| 2 | API or network error | Retry once, then fallback to native tool |
+| 3 | Safety guard blocked | Use native Edit tool instead |
 
 ---
 
@@ -249,8 +115,9 @@ If the repo locator is wrong, the tool now returns a resolver-style failure with
 
 ```bash
 bun install
-bun test          # 57 tests
+bun test          # 187 tests
 bun run typecheck # tsc --noEmit
+bun run build     # tsc
 ```
 
 ## License

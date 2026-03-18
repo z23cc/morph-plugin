@@ -7,9 +7,10 @@
  * any AI coding tool via Bash.
  *
  * Commands:
- *   morph edit   --file <path>                      Apply code edits via stdin
- *   morph search --query <text> [--dir <path>]      Local codebase search
- *   morph github --repo <owner/repo> --query <text> GitHub repo search
+ *   morph edit    --file <path>                      Apply code edits via stdin
+ *   morph search  --query <text> [--dir <path>]      Local codebase search
+ *   morph github  --repo <owner/repo> --query <text> GitHub repo search
+ *   morph compact [--ratio <0.05-1.0>]               Compress context via stdin
  *
  * Environment:
  *   MORPH_API_KEY  Required API key for Morph services
@@ -53,10 +54,11 @@ const CLI_VERSION = (() => {
 const HELP_TEXT = `morph - Morph SDK CLI for AI coding tools
 
 Usage:
-  morph edit   --file <path>                         Apply code edit from stdin
-  morph search --query <text> [--dir <path>]         Local codebase search
-  morph github --repo <owner/repo> --query <text>    GitHub repo search
-  morph github --url <github-url> --query <text>     GitHub repo search (URL)
+  morph edit    --file <path>                         Apply code edit from stdin
+  morph search  --query <text> [--dir <path>]         Local codebase search
+  morph github  --repo <owner/repo> --query <text>    GitHub repo search
+  morph github  --url <github-url> --query <text>     GitHub repo search (URL)
+  morph compact [--ratio <0.05-1.0>]                  Compress context from stdin
 
 Options:
   --help, -h       Show this help message
@@ -71,6 +73,8 @@ Examples:
   morph search --query "database config" --dir ./backend
   morph github --repo facebook/react --query "useState implementation"
   morph github --url https://github.com/facebook/react --query "hooks"
+  cat long-conversation.txt | morph compact
+  cat context.txt | morph compact --ratio 0.2
 `;
 
 async function main(): Promise<void> {
@@ -105,6 +109,11 @@ async function main(): Promise<void> {
     case "github": {
       const { runGithub } = await import("./commands/github.js");
       await runGithub(commandArgs);
+      break;
+    }
+    case "compact": {
+      const { runCompact } = await import("./commands/compact.js");
+      await runCompact(commandArgs);
       break;
     }
     default:
