@@ -1,19 +1,21 @@
 {
   "name": "morph",
-  "version": "2.0.5",
-  "description": "Fast Apply (10,500+ tok/s), WarpGrep codebase search (+4% SWE-Bench Pro), and public GitHub repo context search via Morph SDK",
+  "version": "3.0.0",
+  "description": "Fast Apply (10,500+ tok/s), WarpGrep codebase search (+4% SWE-Bench Pro), GitHub repo context, and context compaction (25,000+ tok/s) via Morph SDK",
   "author": {
-    "name": "Morph",
-    "url": "https://morphllm.com"
+    "name": "duange",
+    "url": "https://github.com/z23cc"
   },
   "homepage": "https://morphllm.com",
   "repository": "https://github.com/z23cc/morph-plugin",
   "license": "MIT",
   "keywords": [
+    "claude-code",
     "fast-apply",
     "code-editing",
     "code-search",
     "warpgrep",
+    "compaction",
     "morph"
   ]
 }

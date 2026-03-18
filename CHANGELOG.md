@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-03-18
+
+### Added
+
+- **Claude Code plugin structure** — `.claude-plugin/plugin.json` manifest, `skills/morph-tools/SKILL.md` for automatic tool routing, `hooks/hooks.json` for session start CLI check
+- **morph CLI** — standalone CLI with four commands: `morph edit`, `morph search`, `morph github`, `morph compact`
+- **morph compact** — 25,000+ tok/s context compression via stdin with `--ratio` and `--preserve-recent` flags
+- **Shared core modules** — platform-agnostic `src/core/` with edit safety guards, search formatting, GitHub repo resolution
+- **CLI tests** — 62 tests covering entrypoint, argument validation, diff utilities, and core functions
+- **Colorized diff output** — `morph edit` shows green/red unified diff in TTY mode
+- **Safety hardening** — stdin timeout, flag value validation, directory existence checks, division-by-zero guards, env var NaN protection
+
+### Changed
+
+- **Package renamed** from `@morphllm/opencode-morph-plugin` to `@duange/morph-plugin`
+- **Major version bump** for breaking change: OpenCode plugin removed, CLI-first architecture
+
+### Removed
+
+- **OpenCode plugin** — `index.ts` entry point, `@opencode-ai/plugin` and `@opencode-ai/sdk` dependencies
+- **OpenCode instructions** — `instructions/morph-tools.md` replaced by `instructions/claude-code.md`
+
 ## [2.0.3] - 2026-03-16
 
 ### Fixed

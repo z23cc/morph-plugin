@@ -15,7 +15,7 @@ user-invocable: false
 The `morph` CLI must be installed and `MORPH_API_KEY` must be set.
 If `morph --version` fails, tell the user to run:
 ```bash
-npm i -g @morphllm/morph-plugin
+npm i -g @duange/morph-plugin
 export MORPH_API_KEY="sk-..."
 ```
 

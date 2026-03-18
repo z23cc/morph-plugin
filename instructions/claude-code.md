@@ -1,11 +1,9 @@
 # Morph CLI Tool Selection Policy
 
-This instruction teaches Claude Code (and other AI coding assistants that invoke
-tools via Bash) when and how to use the Morph CLI. It is the CLI counterpart of
-`morph-tools.md`, which targets the OpenCode plugin interface.
-
-Copy this file into your project or global instructions so the model reliably
-chooses the right tool for each task.
+This instruction teaches Claude Code when and how to use the Morph CLI.
+Copy this file into your project's `.claude/instructions/` directory or
+append it to `~/.claude/CLAUDE.md` so the model reliably chooses the
+right tool for each task.
 
 ## Available Commands
 
@@ -14,7 +12,11 @@ chooses the right tool for each task.
 Pipe code edits via stdin. 10,500+ tok/s fast apply with safety guards.
 
 ```bash
-echo "edited code with lazy markers" | morph edit --file src/app.ts
+echo '// ... existing code ...
+function hello() {
+  return "hello world";
+}
+// ... existing code ...' | morph edit --file src/app.ts
 ```
 
 The CLI reads the edited content from stdin, sends it to the Morph Fast Apply
@@ -83,6 +85,23 @@ and docs are insufficient or unavailable.
 
 - Searching the current local project -- use `morph search` instead
 
+### morph compact [--ratio \<0.05-1.0\>] [--preserve-recent \<n\>]
+
+25,000+ tok/s context compression. Pipe text via stdin.
+
+```bash
+cat long-conversation.txt | morph compact
+cat context.txt | morph compact --ratio 0.2
+```
+
+Compresses large text content while preserving key information. Default ratio
+is 0.3 (keeps ~30%). Lower values = more aggressive compression.
+
+**When to use:**
+
+- Compressing large context before sending to LLM
+- Reducing token usage for long conversation histories
+
 ## First-Action Decision Table
 
 | Task | First tool | Why |
@@ -96,6 +115,7 @@ and docs are insufficient or unavailable.
 | Codebase search / exploration | `morph search` | Fast agentic search |
 | Public GitHub repo understanding | `morph github` | Grounded context without cloning |
 | Exact keyword lookup | Grep tool | Direct ripgrep, no API call |
+| Compress large context | `morph compact` | 25,000+ tok/s compression |
 
 ## Fallback Policy
 
@@ -126,14 +146,7 @@ and docs are insufficient or unavailable.
 Install the CLI globally:
 
 ```bash
-npm i -g @morphllm/cli
-```
-
-Or run commands without installing:
-
-```bash
-npx morph edit --file src/app.ts
-npx morph search --query "auth flow"
+npm i -g @duange/morph-plugin
 ```
 
 Set your API key:
@@ -142,6 +155,6 @@ Set your API key:
 export MORPH_API_KEY="sk-..."
 ```
 
-For Claude Code, copy this file to your project's `.claude/` directory or
-reference it in your global instructions at `~/.claude/CLAUDE.md` so the model
-loads the routing policy on every conversation.
+For Claude Code, copy this file to your project's `.claude/instructions/`
+directory or append it to `~/.claude/CLAUDE.md` so the model loads the
+routing policy on every conversation.

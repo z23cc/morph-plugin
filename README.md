@@ -1,10 +1,11 @@
 # morph-plugin
 
-Claude Code plugin + CLI for [Morph](https://morphllm.com). Three tools:
+Claude Code plugin + CLI for [Morph](https://morphllm.com). Four tools:
 
 - **Fast Apply** — 10,500+ tok/s code editing with lazy markers
 - **WarpGrep** — fast agentic codebase search, +4% on SWE-Bench Pro, -15% cost
 - **Public Repo Context** — grounded context search for public GitHub repos without cloning
+- **Compaction** — 25,000+ tok/s context compression
 
 ![WarpGrep SWE-bench Pro Benchmarks](assets/warpgrep-benchmarks.png)
 
@@ -23,20 +24,10 @@ export MORPH_API_KEY="sk-..."
 ### 2. Install the CLI
 
 ```bash
-npm i -g @morphllm/morph-plugin
+npm i -g @duange/morph-plugin
 ```
 
 ### 3. Configure Claude Code
-
-Add the tool routing instructions so Claude Code knows when to use morph:
-
-```bash
-# Copy to your project
-cp node_modules/@morphllm/morph-plugin/instructions/claude-code.md .claude/instructions/
-
-# Or add to global CLAUDE.md
-cat node_modules/@morphllm/morph-plugin/instructions/claude-code.md >> ~/.claude/CLAUDE.md
-```
 
 Set the API key in Claude Code settings (`~/.claude/settings.json`):
 
@@ -46,6 +37,17 @@ Set the API key in Claude Code settings (`~/.claude/settings.json`):
     "MORPH_API_KEY": "sk-..."
   }
 }
+```
+
+Add tool routing instructions so Claude Code knows when to use morph:
+
+```bash
+# Copy to your project
+mkdir -p .claude/instructions
+cp node_modules/@duange/morph-plugin/instructions/claude-code.md .claude/instructions/
+
+# Or add to global CLAUDE.md
+cat node_modules/@duange/morph-plugin/instructions/claude-code.md >> ~/.claude/CLAUDE.md
 ```
 
 ---
@@ -84,6 +86,17 @@ morph github --repo "vercel/next.js" --query "middleware matching"
 morph github --url "https://github.com/axios/axios" --query "retry logic"
 ```
 
+### morph compact [--ratio \<0.05-1.0\>] [--preserve-recent \<n\>]
+
+25,000+ tok/s context compression. Pipe text via stdin.
+
+```bash
+cat long-conversation.txt | morph compact
+cat context.txt | morph compact --ratio 0.2
+```
+
+Default ratio is 0.3 (keeps ~30% of original). Lower = more aggressive compression.
+
 ---
 
 ## Tool Selection Guide
@@ -97,6 +110,7 @@ morph github --url "https://github.com/axios/axios" --query "retry logic"
 | Codebase search / exploration | `morph search` | Fast agentic search |
 | Public GitHub repo understanding | `morph github` | Grounded context without cloning |
 | Exact keyword lookup | `Grep` | Direct ripgrep, no API call |
+| Compress large context | `morph compact` | 25,000+ tok/s compression |
 
 ---
 
@@ -115,7 +129,7 @@ morph github --url "https://github.com/axios/axios" --query "retry logic"
 
 ```bash
 bun install
-bun test          # 187 tests
+bun test          # 124 tests
 bun run typecheck # tsc --noEmit
 bun run build     # tsc
 ```
