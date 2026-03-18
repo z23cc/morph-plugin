@@ -285,7 +285,7 @@ FALLBACK: If morph_edit fails (API error, timeout), use the native 'edit' tool w
           // Guard 1: Block readonly agents
           if (
             !ALLOW_READONLY_AGENTS &&
-            READONLY_AGENTS.includes(context.agent)
+            (READONLY_AGENTS as readonly string[]).includes(context.agent)
           ) {
             await log(
               "debug",

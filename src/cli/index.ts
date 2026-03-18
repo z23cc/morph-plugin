@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S node --no-deprecation
 
 /**
  * morph CLI
@@ -76,18 +76,19 @@ Examples:
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
-  // Handle top-level flags
-  if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
+  const command = args[0];
+
+  // Handle top-level flags (only when they're the first arg or no command given)
+  if (args.length === 0 || command === "--help" || command === "-h") {
     console.log(HELP_TEXT.trim());
     process.exit(0);
   }
 
-  if (args.includes("--version") || args.includes("-v")) {
+  if (command === "--version" || command === "-v") {
     console.log(`morph ${CLI_VERSION}`);
     process.exit(0);
   }
 
-  const command = args[0];
   const commandArgs = args.slice(1);
 
   switch (command) {

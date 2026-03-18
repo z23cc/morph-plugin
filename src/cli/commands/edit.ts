@@ -12,47 +12,43 @@
  *   3 = safety guard blocked
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { MorphClient } from "@morphllm/morphsdk";
+import {
+  MORPH_API_URL,
+  MORPH_TIMEOUT,
+  EXISTING_CODE_MARKER,
+} from "../../core/types.js";
+import {
+  normalizeCodeEditInput,
+  detectMarkerLeakage,
+  detectTruncation,
+} from "../../core/edit.js";
 import {
   generateUnifiedDiff,
   colorizeDiff,
   countChanges,
 } from "../utils/diff.js";
 
-const MORPH_API_URL = "https://api.morphllm.com";
-const MORPH_TIMEOUT = 30000;
-const EXISTING_CODE_MARKER = "// ... existing code ...";
-
 /**
- * Strip a single outer markdown fence pair from a code edit string.
- * Agents frequently wrap tool arguments in ```lang ... ``` fences.
+ * Read all of stdin as a UTF-8 string, with a timeout to prevent indefinite hangs.
  */
-function normalizeCodeEdit(codeEdit: string): string {
-  const trimmed = codeEdit.trim();
-  const lines = trimmed.split("\n");
-
-  if (lines.length < 3) return codeEdit;
-
-  const firstLine = lines[0]!;
-  const lastLine = lines[lines.length - 1]!;
-
-  if (/^```[\w-]*$/.test(firstLine) && /^```$/.test(lastLine)) {
-    return lines.slice(1, -1).join("\n");
-  }
-
-  return codeEdit;
-}
-
-/**
- * Read all of stdin as a UTF-8 string.
- */
-async function readStdin(): Promise<string> {
+async function readStdin(timeoutMs = 30000): Promise<string> {
   const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(chunk as Buffer);
-  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stdinDone = (async () => {
+    for await (const chunk of process.stdin) {
+      chunks.push(chunk as Buffer);
+    }
+  })();
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`stdin read timed out after ${timeoutMs}ms`)), timeoutMs);
+    // Unref so the timer doesn't keep the process alive
+    if (timer && typeof timer === "object" && "unref" in timer) timer.unref();
+  });
+  await Promise.race([stdinDone, timeout]);
+  if (timer) clearTimeout(timer);
   return Buffer.concat(chunks).toString("utf-8");
 }
 
@@ -66,6 +62,12 @@ export async function runEdit(args: string[]): Promise<void> {
   }
 
   const filepath = args[fileIndex + 1]!;
+  if (filepath.startsWith("-")) {
+    console.error(`Error: --file value looks like a flag: "${filepath}"`);
+    console.error("Usage: morph edit --file <path> < edit-content.txt");
+    process.exit(1);
+  }
+
   const apiKey = process.env.MORPH_API_KEY;
 
   if (!apiKey) {
@@ -92,31 +94,51 @@ export async function runEdit(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const codeEdit = normalizeCodeEdit(rawCodeEdit);
+  const codeEdit = normalizeCodeEditInput(rawCodeEdit);
+  const hasMarkers = codeEdit.includes(EXISTING_CODE_MARKER);
 
-  // Read target file
+  // Read target file (or create if it doesn't exist and no markers)
   let originalCode: string;
+  if (!existsSync(filepath)) {
+    if (!hasMarkers) {
+      // No markers = full file content, create new file
+      writeFileSync(filepath, codeEdit, "utf-8");
+      const lineCount = codeEdit.split("\n").length;
+      console.error(`morph edit: created ${basename(filepath)} (${lineCount} lines)`);
+      return;
+    }
+    console.error(`Error: file not found: ${filepath}`);
+    console.error(
+      `The file doesn't exist and the code edit contains "${EXISTING_CODE_MARKER}" markers.`,
+    );
+    console.error("For new files, provide the complete content without markers.");
+    process.exit(1);
+  }
+
   try {
     originalCode = readFileSync(filepath, "utf-8");
   } catch (err) {
     const error = err as NodeJS.ErrnoException;
-    if (error.code === "ENOENT") {
-      console.error(`Error: file not found: ${filepath}`);
-    } else {
-      console.error(`Error reading file ${filepath}: ${error.message}`);
-    }
+    console.error(`Error reading file ${filepath}: ${error.message}`);
     process.exit(1);
   }
 
   const originalLineCount = originalCode.split("\n").length;
-  const hasMarkers = codeEdit.includes(EXISTING_CODE_MARKER);
+
+  // Pre-flight marker check
+  if (!hasMarkers && originalLineCount > 10) {
+    console.error(
+      `Error: missing "${EXISTING_CODE_MARKER}" markers.`,
+    );
+    console.error(
+      `Your code edit would replace the entire file (${originalLineCount} lines).`,
+    );
+    console.error("Use markers to wrap your changes, or use a different tool.");
+    process.exit(1);
+  }
 
   // Call Morph FastApply API
-  const morph = new MorphClient({
-    apiKey,
-    timeout: MORPH_TIMEOUT,
-  });
-
+  const morph = new MorphClient({ apiKey, timeout: MORPH_TIMEOUT });
   const startTime = Date.now();
   let result;
 
@@ -128,10 +150,7 @@ export async function runEdit(args: string[]): Promise<void> {
         instructions: "Apply the code edit",
         filepath,
       },
-      {
-        morphApiUrl: MORPH_API_URL,
-        generateUdiff: true,
-      },
+      { morphApiUrl: MORPH_API_URL, generateUdiff: true },
     );
   } catch (err) {
     const error = err as Error;
@@ -151,44 +170,24 @@ export async function runEdit(args: string[]): Promise<void> {
 
   const mergedCode = result.mergedCode;
 
-  // Safety guard: marker leakage detection
-  const originalHadMarker = originalCode.includes(EXISTING_CODE_MARKER);
-  if (
-    hasMarkers &&
-    !originalHadMarker &&
-    mergedCode.includes(EXISTING_CODE_MARKER)
-  ) {
+  // Safety guard: marker leakage
+  if (detectMarkerLeakage(originalCode, mergedCode, hasMarkers)) {
     console.error(
       `Error: marker leakage detected in merged output for ${filepath}`,
     );
-    console.error(
-      `The merge model treated "${EXISTING_CODE_MARKER}" as literal code instead of expanding it.`,
-    );
-    console.error("No file changes were written.");
+    console.error("The merge model treated markers as literal code. No changes written.");
     process.exit(3);
   }
 
-  // Safety guard: catastrophic truncation detection
-  const mergedLineCount = mergedCode.split("\n").length;
-  const charLoss =
-    (originalCode.length - mergedCode.length) / originalCode.length;
-  const lineLoss =
-    (originalLineCount - mergedLineCount) / originalLineCount;
-
-  if (hasMarkers && charLoss > 0.6 && lineLoss > 0.5) {
+  // Safety guard: catastrophic truncation
+  const truncation = detectTruncation(originalCode, mergedCode, hasMarkers);
+  if (truncation.triggered) {
+    const mergedLineCount = mergedCode.split("\n").length;
+    console.error(`Error: catastrophic truncation detected for ${filepath}`);
     console.error(
-      `Error: catastrophic truncation detected for ${filepath}`,
+      `Original: ${originalLineCount} lines | Merged: ${mergedLineCount} lines | Loss: ${Math.round(truncation.charLoss * 100)}% chars, ${Math.round(truncation.lineLoss * 100)}% lines`,
     );
-    console.error(
-      `Original: ${originalLineCount} lines (${originalCode.length} chars)`,
-    );
-    console.error(
-      `Merged:   ${mergedLineCount} lines (${mergedCode.length} chars)`,
-    );
-    console.error(
-      `Loss:     ${Math.round(charLoss * 100)}% characters, ${Math.round(lineLoss * 100)}% lines`,
-    );
-    console.error("No file changes were written.");
+    console.error("No changes written.");
     process.exit(3);
   }
 
@@ -206,12 +205,10 @@ export async function runEdit(args: string[]): Promise<void> {
   const { additions, deletions } = countChanges(diffLines);
 
   if (diffLines.length > 2) {
-    // More than just headers
     console.log(colorizeDiff(diffLines));
   }
 
-  const shortPath = basename(filepath);
   console.error(
-    `morph edit: ${shortPath} +${additions}/-${deletions} (${apiDuration}ms)`,
+    `morph edit: ${basename(filepath)} +${additions}/-${deletions} (${apiDuration}ms)`,
   );
 }

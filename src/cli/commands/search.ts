@@ -9,76 +9,52 @@
  *   2 = API error
  */
 
+import { statSync } from "node:fs";
 import { WarpGrepClient } from "@morphllm/morphsdk";
 import type { WarpGrepResult } from "@morphllm/morphsdk";
-
-const MORPH_API_URL = "https://api.morphllm.com";
-const MORPH_WARP_GREP_TIMEOUT = 60000;
-
-/**
- * Format WarpGrep search results for CLI output.
- */
-function formatResult(result: WarpGrepResult): string {
-  if (!result.success) {
-    return `Search failed: ${result.error}`;
-  }
-
-  if (!result.contexts || result.contexts.length === 0) {
-    return "No relevant code found. Try rephrasing your search term.";
-  }
-
-  const parts: string[] = [];
-  parts.push("Relevant context found:");
-  parts.push("");
-
-  for (const ctx of result.contexts) {
-    const rangeStr =
-      !ctx.lines || ctx.lines === "*"
-        ? "*"
-        : ctx.lines.map(([s, e]) => `${s}-${e}`).join(",");
-    parts.push(`  ${ctx.file}:${rangeStr}`);
-  }
-
-  parts.push("");
-
-  for (const ctx of result.contexts) {
-    const rangeStr =
-      !ctx.lines || ctx.lines === "*"
-        ? ""
-        : ` lines ${ctx.lines.map(([s, e]) => `${s}-${e}`).join(",")}`;
-    parts.push(`--- ${ctx.file}${rangeStr} ---`);
-    parts.push(ctx.content);
-    parts.push("");
-  }
-
-  return parts.join("\n");
-}
+import { MORPH_API_URL, MORPH_WARP_GREP_TIMEOUT } from "../../core/types.js";
+import { formatWarpGrepResult } from "../../core/search.js";
 
 export async function runSearch(args: string[]): Promise<void> {
   // Parse --query argument
   const queryIndex = args.indexOf("--query");
   if (queryIndex === -1 || queryIndex + 1 >= args.length) {
     console.error("Error: --query <text> is required");
-    console.error(
-      "Usage: morph search --query <text> [--dir <path>]",
-    );
+    console.error("Usage: morph search --query <text> [--dir <path>]");
     process.exit(1);
   }
 
   const query = args[queryIndex + 1]!;
+  if (!query || query.startsWith("-")) {
+    console.error("Error: --query requires a non-empty text value");
+    process.exit(1);
+  }
 
   // Parse --dir argument (optional, defaults to cwd)
   const dirIndex = args.indexOf("--dir");
-  const dir =
-    dirIndex !== -1 && dirIndex + 1 < args.length
-      ? args[dirIndex + 1]!
-      : process.cwd();
+  let dir: string;
+  if (dirIndex !== -1) {
+    if (dirIndex + 1 >= args.length) {
+      console.error("Error: --dir requires a value");
+      process.exit(1);
+    }
+    dir = args[dirIndex + 1]!;
+    try {
+      if (!statSync(dir).isDirectory()) {
+        console.error(`Error: --dir is not a directory: ${dir}`);
+        process.exit(1);
+      }
+    } catch {
+      console.error(`Error: directory not found: ${dir}`);
+      process.exit(1);
+    }
+  } else {
+    dir = process.cwd();
+  }
 
   const apiKey = process.env.MORPH_API_KEY;
   if (!apiKey) {
-    console.error(
-      "Error: MORPH_API_KEY environment variable is required",
-    );
+    console.error("Error: MORPH_API_KEY environment variable is required");
     console.error("Get your API key at: https://morphllm.com/dashboard/api-keys");
     process.exit(1);
   }
@@ -111,10 +87,8 @@ export async function runSearch(args: string[]): Promise<void> {
     const duration = Date.now() - startTime;
     const contextCount = result.contexts?.length ?? 0;
 
-    console.log(formatResult(result));
-    console.error(
-      `morph search: ${contextCount} results (${duration}ms)`,
-    );
+    console.log(formatWarpGrepResult(result));
+    console.error(`morph search: ${contextCount} results (${duration}ms)`);
   } catch (err) {
     const error = err as Error;
     const duration = Date.now() - startTime;

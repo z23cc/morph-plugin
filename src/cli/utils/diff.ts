@@ -24,9 +24,10 @@ export function generateUnifiedDiff(
   const newLines = modified.split("\n");
   const result: string[] = [];
 
-  // File headers
-  result.push(`--- a/${filepath}`);
-  result.push(`+++ b/${filepath}`);
+  // File headers — normalize absolute paths to avoid double-slash
+  const displayPath = filepath.startsWith("/") ? filepath.slice(1) : filepath;
+  result.push(`--- a/${displayPath}`);
+  result.push(`+++ b/${displayPath}`);
 
   // Simple LCS-based diff
   const hunks = computeHunks(oldLines, newLines);
@@ -69,14 +70,17 @@ function computeHunks(
   // Group changes into hunks with context
   const hunks: Hunk[] = [];
   let currentHunk: Hunk | null = null;
+  // Track the effective position in the old file independently of oldCount,
+  // so that insert changes (which don't consume old lines) don't cause
+  // oldStart + oldCount to lag behind the actual old-file position.
+  let oldPos = 0;
 
   for (let i = 0; i < changes.length; i++) {
     const change = changes[i]!;
 
     if (
       currentHunk === null ||
-      change.oldIndex - (currentHunk.oldStart + currentHunk.oldCount) >
-        contextSize * 2
+      change.oldIndex - oldPos > contextSize * 2
     ) {
       // Start new hunk
       if (currentHunk) {
@@ -97,20 +101,22 @@ function computeHunks(
       for (let j = contextStart; j < change.oldIndex; j++) {
         currentHunk.lines.push(` ${oldLines[j]}`);
       }
+      oldPos = change.oldIndex;
     } else {
       // Fill gap with context lines between changes
-      const gapStart = currentHunk.oldStart + currentHunk.oldCount;
-      for (let j = gapStart; j < change.oldIndex; j++) {
+      for (let j = oldPos; j < change.oldIndex; j++) {
         currentHunk.lines.push(` ${oldLines[j]}`);
         currentHunk.oldCount++;
         currentHunk.newCount++;
       }
+      oldPos = change.oldIndex;
     }
 
     // Add the change itself
     if (change.type === "delete" || change.type === "replace") {
       currentHunk.lines.push(`-${oldLines[change.oldIndex]}`);
       currentHunk.oldCount++;
+      oldPos = change.oldIndex + 1;
     }
     if (change.type === "insert" || change.type === "replace") {
       currentHunk.lines.push(`+${newLines[change.newIndex]}`);
@@ -221,25 +227,7 @@ function computeLCS(
   const m = oldLines.length;
   const n = newLines.length;
 
-  // Use 2-row DP to save memory
-  let prev = new Uint16Array(n + 1);
-  let curr = new Uint16Array(n + 1);
-
-  // Forward pass to get LCS length
-  for (let i = 1; i <= m; i++) {
-    [prev, curr] = [curr, prev];
-    curr.fill(0);
-    for (let j = 1; j <= n; j++) {
-      if (oldLines[i - 1] === newLines[j - 1]) {
-        curr[j] = prev[j - 1]! + 1;
-      } else {
-        curr[j] = Math.max(prev[j]!, curr[j - 1]!);
-      }
-    }
-  }
-
-  // Backtrack to find actual LCS (need full table for this)
-  // Use column-wise reconstruction
+  // Full DP table using number[][] (no Uint16Array overflow risk)
   const dp: number[][] = Array.from({ length: m + 1 }, () =>
     new Array(n + 1).fill(0),
   );
@@ -253,6 +241,7 @@ function computeLCS(
     }
   }
 
+  // Backtrack to find actual LCS
   const result: [number, number][] = [];
   let i = m;
   let j = n;

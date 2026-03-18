@@ -23,8 +23,8 @@ export function normalizeCodeEditInput(codeEdit: string): string {
 
   if (lines.length < 3) return codeEdit;
 
-  const firstLine = lines[0];
-  const lastLine = lines[lines.length - 1];
+  const firstLine = lines[0]!.trimEnd();
+  const lastLine = lines[lines.length - 1]!.trimEnd();
 
   if (/^```[\w-]*$/.test(firstLine) && /^```$/.test(lastLine)) {
     return lines.slice(1, -1).join("\n");
@@ -70,6 +70,9 @@ export function detectTruncation(
   mergedCode: string,
   hasMarkers: boolean,
 ): { triggered: boolean; charLoss: number; lineLoss: number } {
+  if (originalCode.length === 0) {
+    return { triggered: false, charLoss: 0, lineLoss: 0 };
+  }
   const originalLineCount = originalCode.split("\n").length;
   const mergedLineCount = mergedCode.split("\n").length;
   const charLoss =

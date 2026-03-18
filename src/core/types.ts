@@ -20,8 +20,8 @@ export const GITHUB_REPO_SUGGESTION_LIMIT = 5;
 // Compaction constants
 export const CHARS_PER_TOKEN = 3;
 
-/** Plugin version */
-export const PLUGIN_VERSION = "2.0.0";
+/** Plugin version — keep in sync with package.json */
+export const PLUGIN_VERSION = "2.0.5";
 
 /** Canonical marker string used for lazy edit placeholders */
 export const EXISTING_CODE_MARKER = "// ... existing code ...";
@@ -30,7 +30,7 @@ export const EXISTING_CODE_MARKER = "// ... existing code ...";
 export const MORPH_ROUTING_HINT_HEADER = "Morph plugin routing hints:";
 
 /** Agents that are blocked from using morph_edit by default */
-export const READONLY_AGENTS = ["plan", "explore"];
+export const READONLY_AGENTS = ["plan", "explore"] as const;
 
 /** Regex for validating GitHub owner/repo format */
 export const GITHUB_OWNER_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -64,15 +64,18 @@ export function getMorphApiKey(): string | undefined {
 }
 
 export function getCompactContextThreshold(): number {
-  return parseFloat(process.env.MORPH_COMPACT_CONTEXT_THRESHOLD || "0.7");
+  const val = parseFloat(process.env.MORPH_COMPACT_CONTEXT_THRESHOLD || "0.7");
+  return Number.isFinite(val) && val > 0 && val <= 1 ? val : 0.7;
 }
 
 export function getCompactPreserveRecent(): number {
-  return parseInt(process.env.MORPH_COMPACT_PRESERVE_RECENT || "6", 10);
+  const val = parseInt(process.env.MORPH_COMPACT_PRESERVE_RECENT || "6", 10);
+  return Number.isFinite(val) && val >= 0 ? val : 6;
 }
 
 export function getCompactRatio(): number {
-  return parseFloat(process.env.MORPH_COMPACT_RATIO || "0.3");
+  const val = parseFloat(process.env.MORPH_COMPACT_RATIO || "0.3");
+  return Number.isFinite(val) && val > 0 && val < 1 ? val : 0.3;
 }
 
 // ---------------------------------------------------------------------------

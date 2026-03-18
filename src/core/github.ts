@@ -41,14 +41,14 @@ async function withGitHubTimeout<T>(fn: (signal: AbortSignal) => Promise<T>): Pr
 // Suggestion query building
 // ---------------------------------------------------------------------------
 
-export function tokenizeSuggestionQuery(text: string): string[] {
+function tokenizeSuggestionQuery(text: string): string[] {
   return text
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter((token) => token.length >= 2);
 }
 
-export function buildGitHubSuggestionQueries(
+function buildGitHubSuggestionQueries(
   repo: GitHubRepo,
   searchTerm: string,
 ): string[] {
@@ -178,8 +178,9 @@ export function formatPublicRepoResolutionFailure(
   detail?: string,
   suggestions: GitHubRepoSuggestion[] = [],
 ): string {
+  const detailSuffix = detail ? ` (${detail})` : "";
   const parts: string[] = [
-    `Repository not found: ${repo}\n\nThis repository does not exist or is private. Do NOT keep guessing other repo names.`,
+    `Repository not found: ${repo}${detailSuffix}\n\nThis repository does not exist or is private. Do NOT keep guessing other repo names.`,
   ];
   if (suggestions.length > 0) {
     const list = suggestions.map((s) => `- ${s.fullName}${s.description ? ` - ${s.description}` : ""}`).join("\n");
